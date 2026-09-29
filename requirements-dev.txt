@@ -1,0 +1,5 @@
+# Local development: collector + dashboard + tests (openpyxl reads the Jobiqo history sheet for the replay test).
+-r requirements.txt
+-r dashboard/requirements.txt
+pytest==9.1.1
+openpyxl==3.1.5

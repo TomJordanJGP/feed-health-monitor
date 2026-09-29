@@ -1,0 +1,15 @@
+# JGP brand (matches the JPD dashboard): Brand Purple, Deep Blue text, light purple panels.
+[theme]
+primaryColor = "#643791"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f8f5fb"
+textColor = "#240f45"
+font = "sans serif"
+
+[server]
+headless = true
+# No `address` here: a hosting service must be able to reach the app. Local runs pass
+# `--server.address localhost` (see README) so the dashboard isn't exposed on the network.
+
+[client]
+toolbarMode = "minimal"

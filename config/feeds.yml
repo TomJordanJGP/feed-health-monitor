@@ -1,0 +1,70 @@
+# Which feeds the monitor collects and shows. Feeds are keyed by the XML file name in
+# feed_map.xml, because the map's display names change ("London test feed" is Jobiqo's
+# "JGP scrape | JGP London"). URLs are never stored here: they come from the feed map at run time.
+#
+#   collect   fetch and store this feed
+#   show      display it in the dashboard
+#   imported  Jobiqo imports it. The all-feeds totals cover feeds that are both shown and imported,
+#             and only imported feeds count as a "moved to another feed" destination.
+#
+# A feed that appears in the map but isn't listed here is collected, flagged "unconfigured"
+# in the status view, and kept out of the summary until it's added.
+
+defaults:
+  orange_hours: 5        # feed status turns orange when the XML is older than this at the check
+  red_hours: 10          # ...and red beyond this. Per-feed overrides go on the feed entry.
+
+monitor:
+  expiry_grace_hours: 24         # a job gone within this long of its close date counts as expired
+  not_reaching_grace_hours: 5    # how long a job may be in a feed before "not reaching Jobiqo"
+  export_max_shrink: 0.20        # skip not-reaching if the Jobiqo export shrank more than this
+  export_max_age_hours: 12       # ...or if the export is older than this
+  monitor_orange_hours: 2        # dashboard: "monitor last ran" turns orange / red after these
+  monitor_red_hours: 4
+
+feeds:
+  civil_service_jobs_uk.xml:
+    label: "JGP scrape | Civil Service Jobs UK"
+    collect: true
+    show: true
+    imported: true
+  jgp_backfill_feed_v1.xml:
+    label: "JGP scrape | JGP Backfill"
+    collect: true
+    show: true
+    imported: true
+  jgp_backfill_feed_v2.xml:
+    label: "JGP scrape | JGP London"
+    collect: true
+    show: true
+    imported: true
+  jgp_backfill_feed_v3.xml:
+    label: "JGP scrape | JGP Backfill (v3)"
+    collect: true
+    show: true
+    imported: true
+  jgp_scraping_feed.xml:
+    label: "JGP scrape"
+    collect: true
+    show: true
+    imported: true
+  jgp_ats_feed.xml:
+    label: "JGP ATS feed"
+    collect: true
+    show: true
+    imported: true
+  jgp_falkland_islands_government_feed.xml:
+    label: "JGP | Falkland Island"
+    collect: true
+    show: true
+    imported: true
+  jgp_tribepad_feed.xml:
+    label: "JGP Tribepad"
+    collect: true
+    show: false          # collected but hidden for now (Tom, 2026-09-29)
+    imported: false      # not a Jobiqo importer
+  jgp_test_feed.xml:
+    label: "JGP Test"
+    collect: false       # vendor's review feed; excluded (Tom, 2026-09-28)
+    show: false
+    imported: false

@@ -1,0 +1,30 @@
+# Secrets and local config: never commit
+.env
+service_account.json
+# Any JSON may be a key; this repo tracks none
+*.json
+.streamlit/secrets.toml
+
+# Local data: Jobiqo import URLs, downloaded feed copies
+data/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS
+.DS_Store
+
+# Internal notes: kept on this machine, never published (this repo is public)
+CLAUDE.md
+lessons.md
+session_handoff.md
+tasks/
+docs/
+
+# Dashboard CSV downloads and local git-history backups
+*.csv
+*.bundle

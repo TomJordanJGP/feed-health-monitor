@@ -1,0 +1,9 @@
+# Dashboard: Streamlit reads the feed_health views. Listed in full (no -r) so a host like
+# Streamlit Community Cloud can install from this file on its own.
+streamlit==1.57.0
+pandas==2.3.3
+pyarrow==24.0.0
+db-dtypes==1.6.0
+google-cloud-bigquery==3.41.0
+google-auth==2.53.0
+PyYAML==6.0.3

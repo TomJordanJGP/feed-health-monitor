@@ -1,0 +1,5 @@
+# Collector only: kept lean (no pandas/pyarrow) so each hourly Action bills 1 minute.
+google-cloud-bigquery==3.41.0
+google-auth==2.53.0
+requests==2.34.2
+PyYAML==6.0.3
