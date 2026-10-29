@@ -200,3 +200,82 @@ def test_duplicates_table_empty_and_unknown_live():
     unknown = duplicates_frame().assign(live=None)
     assert set(helpers.duplicates_table(unknown)["Copies live on Jobiqo"]) == {"unknown"}
     assert helpers.live_twice(unknown) is None
+
+
+def companies_frame():
+    import numpy as np  # BigQuery's REPEATED columns arrive as numpy arrays
+    base = dict(jobiqo_id=None, ats_org_id=None, lifecycle_stage="customer", match_status="agree", matched_by="jobiqo_id",
+                matched_org_keys=np.array([], dtype=object), feed_name=None, duplicate_on=None,
+                duplicate_ids=np.array([], dtype=object), notes=None, feed_jobs=0, jobiqo_jobs=0,
+                last_in_feed_ts=pd.NaT, jobs_status="in_feeds")
+    return pd.DataFrame([
+        {**base, "hubspot_id": "1", "name": "Sefton Council", "jobiqo_id": "934", "matched_org_keys": np.array(["jgp:934"]),
+         "feed_name": "Sefton Council", "feed_jobs": 29, "jobiqo_jobs": 29},
+        {**base, "hubspot_id": "2", "name": "Kent County Council", "match_status": "conflict", "ats_org_id": "901",
+         "matched_org_keys": np.array(["jgp:300"]), "feed_name": "Medway Council", "feed_jobs": 5,
+         "notes": "name points to Kent County Council"},
+        {**base, "hubspot_id": "3", "name": "Surrey County Council", "match_status": "name_only",
+         "matched_org_keys": np.array(["jgp:100"]), "feed_jobs": 40, "lifecycle_stage": None},
+        {**base, "hubspot_id": "4", "name": "Old Customer Trust", "match_status": "no_match", "jobs_status": "never_seen"},
+        {**base, "hubspot_id": "5", "name": "Sefton Council", "match_status": "name_only", "jobiqo_id": "777",
+         "matched_org_keys": np.array(["jgp:934"]), "duplicate_on": "name", "duplicate_ids": np.array(["1"]),
+         "lifecycle_stage": "opportunity", "feed_jobs": 29},
+        {**base, "hubspot_id": "6", "name": "Lapsed Borough", "jobs_status": "last_seen",
+         "last_in_feed_ts": ts(2026, 10, 12, 9, 0), "matched_org_keys": np.array(["jgp:55"])},
+        {**base, "hubspot_id": "7", "name": "Prospect Ltd", "match_status": "no_match", "jobs_status": "never_seen",
+         "lifecycle_stage": "lead"},
+    ])
+
+
+def test_companies_clean_up_items_come_first_in_order():
+    table = helpers.companies_table(companies_frame())
+    assert list(table["HubSpot ID"]) == ["2", "5", "3", "6", "4", "1", "7"]   # ties: most jobs, then name
+    todo = dict(zip(table["HubSpot ID"], table["To do"]))
+    assert todo == {"2": "Keys disagree", "5": "Duplicate; Check Jobiqo ID", "3": "Add Jobiqo ID",
+                    "4": "Customer with no jobs", "6": "Customer with no jobs", "1": "", "7": ""}
+    row = table.set_index("HubSpot ID").loc["5"]
+    assert (row["Same key as"], row["Stage"], row["Match"]) == ("name: 1", "Opportunity", "🔤 Name only")
+    assert table.set_index("HubSpot ID").loc["6", "Jobs"] == "Not now (last in a feed Mon 12 Oct)"
+    assert table.set_index("HubSpot ID").loc["3", "Stage"] == helpers.NO_STAGE
+    assert helpers.stage_options(companies_frame()) == ["Customer", "Opportunity", "Lead", helpers.NO_STAGE]
+    pa.Table.from_pandas(table)
+
+
+def test_companies_filters_and_search():
+    frame = companies_frame()
+    assert list(helpers.companies_table(frame, cleanup_only=True)["HubSpot ID"]) == ["2", "5", "3", "6", "4"]
+    assert set(helpers.companies_table(frame, stages=["Customer"])["HubSpot ID"]) == {"1", "2", "4", "6"}
+    assert list(helpers.companies_table(frame, matches=["⚠️ Keys disagree"])["HubSpot ID"]) == ["2"]
+    assert set(helpers.companies_table(frame, jobs=["None seen"])["HubSpot ID"]) == {"4", "7"}
+    assert set(helpers.companies_table(frame, search="sefton")["HubSpot ID"]) == {"1", "5"}
+    assert list(helpers.companies_table(frame, search="901")["HubSpot ID"]) == ["2"]     # by ATS ID too
+    assert list(helpers.companies_table(frame, search="medway")["HubSpot ID"]) == ["2"]  # and the feed's name
+    assert helpers.companies_table(pd.DataFrame()).empty
+
+
+def employers_for_hubspot():
+    return pd.DataFrame([
+        dict(org_key="jgp:934", org_name="Sefton Council", label="JGP ATS feed", show=True, jobs_now=29, on_jobiqo=29),
+        dict(org_key="cs:4204", org_name="HM Prison and Probation Service", label="JGP scrape | Civil Service Jobs UK",
+             show=True, jobs_now=40, on_jobiqo=40),
+        dict(org_key="jgp:88", org_name="Unknown Trust", label="JGP ATS feed", show=True, jobs_now=3, on_jobiqo=2),
+        dict(org_key="jgp:88", org_name="Unknown Trust", label="JGP scrape", show=True, jobs_now=2, on_jobiqo=None),
+        dict(org_key="jgp:99", org_name="Gone Away Council", label="JGP scrape", show=True, jobs_now=0, on_jobiqo=None),
+        dict(org_key="jgp:77", org_name="Hidden Feed Org", label="JGP Hidden", show=False, jobs_now=5, on_jobiqo=5),
+    ])
+
+
+def test_feed_employers_not_in_hubspot():
+    table = helpers.employers_not_in_hubspot(employers_for_hubspot(), companies_frame())
+    assert list(table["Employer"]) == ["HM Prison and Probation Service", "Unknown Trust"]   # Sefton is matched
+    trust = table.iloc[1]
+    assert (trust["Jobiqo ID"], trust["Feeds"], trust["Jobs now"], trust["On Jobiqo"]) == \
+        ("88", "JGP ATS feed, JGP scrape", 5, 2)
+    assert list(helpers.employers_not_in_hubspot(employers_for_hubspot(), companies_frame(), "trust")["Employer"]) == \
+        ["Unknown Trust"]
+    pa.Table.from_pandas(table)
+
+
+def test_companies_totals():
+    totals = helpers.companies_totals(companies_frame(), employers_for_hubspot())
+    assert totals == {"companies": 7, "customers": 4, "customers_no_jobs": 2, "cleanup": 3, "employers_not_in_hubspot": 2}

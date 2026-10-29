@@ -230,3 +230,147 @@ def live_twice(dups: pd.DataFrame) -> int | None:
     if dups.empty or dups["live"].isna().any():
         return None
     return int((dups.groupby("group_id")["live"].apply(lambda s: truthy(s).sum()) >= 2).sum())
+
+
+# --------------------------------------------------------------------------- companies
+
+STAGE_LABELS = {"customer": "Customer", "opportunity": "Opportunity", "lead": "Lead",
+                "salesqualifiedlead": "Sales qualified lead", "marketingqualifiedlead": "Marketing qualified lead",
+                "subscriber": "Subscriber", "evangelist": "Evangelist", "other": "Other"}
+NO_STAGE = "Not set"
+MATCH_LABELS = {"agree": "✅ Keys agree", "conflict": "⚠️ Keys disagree", "name_only": "🔤 Name only",
+                "no_match": "— Not in a feed"}
+JOBS_LABELS = {"in_feeds": "In a feed", "jobiqo_only": "Only on Jobiqo", "last_seen": "Not now",
+               "never_seen": "None seen"}
+# Clean-up reasons, most urgent first; a company can have several.
+CLEANUP_ORDER = ("Keys disagree", "Duplicate", "Add Jobiqo ID", "Check Jobiqo ID", "Customer with no jobs")
+
+
+def stage_label(stage) -> str:
+    return STAGE_LABELS.get(stage, stage) if isinstance(stage, str) and stage else NO_STAGE
+
+
+def stage_options(companies: pd.DataFrame) -> list[str]:
+    """The stages present, in HubSpot's order (customer first), custom ones next, "Not set" last."""
+    order = list(STAGE_LABELS.values())
+    present = set(companies["lifecycle_stage"].map(stage_label)) if not companies.empty else set()
+    return sorted(present, key=lambda s: (s == NO_STAGE, order.index(s) if s in order else len(order), s))
+
+
+def _keys(value) -> list[str]:
+    """A BigQuery REPEATED column arrives as a numpy array (or None); a list of strings either way."""
+    return [] if value is None or (not hasattr(value, "__len__")) else [str(v) for v in value]
+
+
+def cleanup_reasons(row) -> list[str]:
+    """What needs doing in HubSpot for this company, in CLEANUP_ORDER."""
+    reasons = []
+    if row["match_status"] == "conflict":
+        reasons.append("Keys disagree")
+    if isinstance(row["duplicate_on"], str) and row["duplicate_on"]:
+        reasons.append("Duplicate")
+    if row["match_status"] == "name_only":
+        reasons.append("Check Jobiqo ID" if isinstance(row["jobiqo_id"], str) and row["jobiqo_id"] else "Add Jobiqo ID")
+    if row["lifecycle_stage"] == "customer" and row["jobs_status"] in ("last_seen", "never_seen"):
+        reasons.append("Customer with no jobs")
+    return reasons
+
+
+def _jobs_text(row) -> str:
+    if row["jobs_status"] == "last_seen":
+        return f"Not now (last in a feed {uk_time(row['last_in_feed_ts']).split(',')[0]})"
+    return JOBS_LABELS.get(row["jobs_status"], DASH)
+
+
+def companies_table(companies: pd.DataFrame, stages: list[str] | None = None, matches: list[str] | None = None,
+                    jobs: list[str] | None = None, search: str = "", cleanup_only: bool = False) -> pd.DataFrame:
+    """One row per HubSpot company; filters take the display labels. Clean-up items come first
+    (keys disagreeing, duplicates, missing or unknown Jobiqo IDs, customers with no jobs), then
+    the rest, each by most jobs."""
+    columns = ["Company", "Stage", "To do", "Match", "Jobs", "Feed jobs", "On Jobiqo", "Jobiqo ID", "ATS ID",
+               "Feed employer", "Same key as", "Notes", "HubSpot ID"]
+    if companies.empty:
+        return pd.DataFrame(columns=columns)
+    rows = companies.copy()
+    rows["_stage"] = rows["lifecycle_stage"].map(stage_label)
+    rows["_match"] = rows["match_status"].map(MATCH_LABELS).fillna(DASH)
+    rows["_jobs"] = rows["jobs_status"].map(JOBS_LABELS).fillna(DASH)
+    rows["_reasons"] = rows.apply(cleanup_reasons, axis=1)
+    if stages:
+        rows = rows[rows["_stage"].isin(stages)]
+    if matches:
+        rows = rows[rows["_match"].isin(matches)]
+    if jobs:
+        rows = rows[rows["_jobs"].isin(jobs)]
+    if search:
+        needle = search.strip().casefold()
+        haystack = (rows["name"].fillna("") + " " + rows["feed_name"].fillna("") + " " + rows["hubspot_id"].fillna("")
+                    + " " + rows["jobiqo_id"].fillna("") + " " + rows["ats_org_id"].fillna(""))
+        rows = rows[haystack.str.casefold().str.contains(needle, regex=False)]
+    if cleanup_only:
+        rows = rows[rows["_reasons"].map(bool)]
+    rank = {reason: i for i, reason in enumerate(CLEANUP_ORDER)}
+    rows["_rank"] = rows["_reasons"].map(lambda r: min((rank[x] for x in r), default=len(rank)))
+    rows["_feed"] = _int(rows["feed_jobs"])
+    rows["_jobiqo"] = _int(rows["jobiqo_jobs"])
+    rows = rows.sort_values(["_rank", "_feed", "_jobiqo", "name"], ascending=[True, False, False, True],
+                            na_position="last")
+
+    def same_key(r) -> str:
+        others = _keys(r["duplicate_ids"])
+        return f"{r['duplicate_on']}: {', '.join(others)}" if others else ""
+
+    return pd.DataFrame({
+        "Company": rows["name"].fillna("(no name)"),
+        "Stage": rows["_stage"],
+        "To do": rows["_reasons"].map("; ".join),
+        "Match": rows["_match"],
+        "Jobs": rows.apply(_jobs_text, axis=1) if len(rows) else pd.Series(dtype="object"),
+        "Feed jobs": rows["_feed"],
+        "On Jobiqo": rows["_jobiqo"],
+        "Jobiqo ID": rows["jobiqo_id"].fillna(""),
+        "ATS ID": rows["ats_org_id"].fillna(""),
+        "Feed employer": rows["feed_name"].fillna(""),
+        "Same key as": rows.apply(same_key, axis=1) if len(rows) else pd.Series(dtype="object"),
+        "Notes": rows["notes"].fillna(""),
+        "HubSpot ID": rows["hubspot_id"],
+    }, columns=columns)
+
+
+def employers_not_in_hubspot(employers: pd.DataFrame, companies: pd.DataFrame, search: str = "") -> pd.DataFrame:
+    """Employers with jobs in a shown feed now that no HubSpot company matched by Jobiqo ID, ATS ID
+    or name: one row per employer, its feeds combined, most jobs first."""
+    columns = ["Employer", "Jobiqo ID", "Feeds", "Jobs now", "On Jobiqo"]
+    matched = {k for keys in companies.get("matched_org_keys", pd.Series(dtype="object")) for k in _keys(keys)}
+    rows = employers[truthy(employers["show"]) & _int(employers["jobs_now"]).fillna(0).gt(0)
+                     & ~employers["org_key"].isin(matched)]
+    if search:
+        rows = rows[rows["org_name"].str.contains(search.strip(), case=False, na=False, regex=False)]
+    if rows.empty:
+        return pd.DataFrame(columns=columns)
+    grouped = rows.assign(jobs_now=_int(rows["jobs_now"]), on_jobiqo=_int(rows["on_jobiqo"])).groupby(
+        "org_key", sort=False).agg(org_name=("org_name", "first"), feeds=("label", lambda s: ", ".join(sorted(set(s)))),
+                                   jobs_now=("jobs_now", "sum"), on_jobiqo=("on_jobiqo", lambda s: s.sum(min_count=1)))
+    grouped = grouped.reset_index().sort_values(["jobs_now", "org_name"], ascending=[False, True])
+    return pd.DataFrame({
+        "Employer": grouped["org_name"],
+        "Jobiqo ID": grouped["org_key"].str.partition(":")[2],
+        "Feeds": grouped["feeds"],
+        "Jobs now": _int(grouped["jobs_now"]),
+        "On Jobiqo": _int(grouped["on_jobiqo"]),
+    }, columns=columns).reset_index(drop=True)
+
+
+def companies_totals(companies: pd.DataFrame, employers: pd.DataFrame) -> dict:
+    """The pull-out numbers for the Companies tab."""
+    if companies.empty:
+        return {"companies": 0, "customers": 0, "customers_no_jobs": 0, "cleanup": 0, "employers_not_in_hubspot": 0}
+    reasons = companies.apply(cleanup_reasons, axis=1)
+    customers = companies["lifecycle_stage"].eq("customer")
+    return {
+        "companies": len(companies),
+        "customers": int(customers.sum()),
+        "customers_no_jobs": int(reasons.map(lambda r: "Customer with no jobs" in r).sum()),
+        "cleanup": int(reasons.map(lambda r: any(x != "Customer with no jobs" for x in r)).sum()),
+        "employers_not_in_hubspot": len(employers_not_in_hubspot(employers, companies)),
+    }

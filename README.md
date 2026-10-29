@@ -36,7 +36,9 @@ Service's `jobiqo_id`), ATS ID (`old_account_id`) and tidied name. `match_status
 keys another company shares. `v_companies` adds where each company's jobs are now: in a feed,
 only on Jobiqo, last seen in a feed on a date, or never seen. A HubSpot failure never fails the
 run: it's recorded on the `hubspot` row of `checks`, whose age is the time since the last
-successful sync. The run log is public, so it prints counts only.
+successful sync. The run log is public, so it prints counts only. The dashboard's Companies tab
+lists the HubSpot clean-up first (keys that disagree, duplicates, missing Jobiqo IDs, customers with
+no jobs), then the feed employers no HubSpot company matches.
 
 ## Deploy on Streamlit Community Cloud
 

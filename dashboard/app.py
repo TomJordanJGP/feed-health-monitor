@@ -70,7 +70,7 @@ st.caption("Is each feed being rebuilt, and are any employers' jobs disappearing
 
 with st.spinner("Loading the latest checks…"):
     status, summary, employers = view("v_feed_status"), view("v_summary"), view("v_employers")
-    duplicates = view("v_duplicates")
+    duplicates, companies = view("v_duplicates"), view("v_companies")
 
 if status.empty:
     st.info(f"No checks recorded in `{DATASET}` yet. The collector runs hourly at :47.")
@@ -92,7 +92,8 @@ if monitor != "green":
         f"The monitor hasn't recorded a check for {helpers.age_label(minutes / 60)}. The figures below may be "
         "out of date: check the collector's GitHub Action (TomJordanJGP/feed-health-monitor).")
 
-tab_status, tab_summary, tab_employers, tab_dups = st.tabs(["Feed status", "Summary", "Employers", "Duplicates"])
+tab_status, tab_summary, tab_employers, tab_dups, tab_companies = st.tabs(
+    ["Feed status", "Summary", "Employers", "Duplicates", "Companies"])
 
 
 def number(value) -> str:
@@ -181,5 +182,57 @@ with tab_dups:
         show_table(table, height=min(38 * (len(table) + 1), 700))
     st.caption("The same vacancy under different IDs in two feeds, matched on the same advert URL or the same "
                "employer and reference. Jobiqo imports each copy, so every live copy is a separate advert.")
+
+# --------------------------------------------------------------------------- companies
+
+with tab_companies:
+    hubspot = status[status["scope"] == "hubspot"]
+    synced = hubspot["build_ts"].iloc[0] if not hubspot.empty else None
+    if synced is None or pd.isna(synced):
+        st.info("HubSpot companies haven't been synced yet: the first collector run after 06:00 UTC does it.")
+    elif isinstance(hubspot["error"].iloc[0], str) and hubspot["error"].iloc[0]:
+        st.warning(f"The latest HubSpot sync failed ({hubspot['error'].iloc[0]}). These are the companies as of "
+                   f"{helpers.uk_time(synced)}.")
+    elif hubspot["status"].iloc[0] in ("orange", "red"):
+        st.warning(f"HubSpot companies were last synced {helpers.uk_time(synced)}, over a day ago.")
+
+    if not companies.empty:
+        totals = helpers.companies_totals(companies, employers)
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("HubSpot companies", number(totals["companies"]), f"synced {helpers.uk_time(synced)}",
+                  delta_color="off", delta_arrow="off")
+        k2.metric("Customers with no jobs", number(totals["customers_no_jobs"]),
+                  f"of {totals['customers']:,} customers", delta_color="off", delta_arrow="off")
+        k3.metric("To clean up in HubSpot", number(totals["cleanup"]))
+        k4.metric("Feed employers not in HubSpot", number(totals["employers_not_in_hubspot"]))
+
+        c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 3, 1.4])
+        stages = c1.multiselect("Stage", helpers.stage_options(companies), placeholder="All stages")
+        matches = c2.multiselect("Match", list(helpers.MATCH_LABELS.values()), placeholder="Any match")
+        jobs = c3.multiselect("Jobs", list(helpers.JOBS_LABELS.values()), placeholder="Any jobs")
+        company_search = c4.text_input("Company", placeholder="Name, HubSpot ID, Jobiqo ID or ATS ID")
+        cleanup_only = c5.toggle("To do only", value=True)
+        table = helpers.companies_table(companies, stages, matches, jobs, company_search, cleanup_only)
+        if table.empty:
+            st.success("Nothing to do with these filters." if cleanup_only else "No company matches these filters.")
+        else:
+            st.markdown(f"**{len(table):,}** companies")
+            show_table(table, height=min(38 * (len(table) + 1), 700))
+        st.caption("Every HubSpot company, synced daily, matched to every employer seen in a feed since 29 Sep by "
+                   "Jobiqo ID (the feeds' organisation ID), ATS ID (their old account ID) and name. **To do:** "
+                   "*Keys disagree*: those keys point to different feed employers (Notes say which). *Duplicate*: "
+                   "another company has the same name or ID (Same key as). *Add / Check Jobiqo ID*: it matches a "
+                   "feed employer by name only, so its Jobiqo ID is empty or not one any feed uses. *Customer with "
+                   "no jobs*: nothing in a feed or on Jobiqo now. **Feed jobs:** in the feeds now. **On Jobiqo:** "
+                   "live on the board for its Jobiqo organisation, including jobs posted there directly.")
+
+        st.subheader("Feed employers not in HubSpot")
+        missing = helpers.employers_not_in_hubspot(employers, companies, company_search)
+        if missing.empty:
+            st.success("Every employer with jobs in a feed matches a HubSpot company.")
+        else:
+            show_table(missing, height=min(38 * (len(missing) + 1), 500))
+        st.caption("Employers with jobs in a feed now that no HubSpot company matches by Jobiqo ID, ATS ID or name. "
+                   "Civil Service departments are among them: HubSpot holds no Jobiqo IDs for them.")
 
 st.caption(f"Dataset `{settings.bq_project}.{DATASET}` · statuses as of {helpers.uk_time(last_run)} UK time")
