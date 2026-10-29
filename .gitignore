@@ -1,5 +1,6 @@
 # Secrets and local config: never commit
 .env
+*.env
 service_account.json
 # Any JSON may be a key; this repo tracks none
 *.json
@@ -7,6 +8,8 @@ service_account.json
 
 # Local data: Jobiqo import URLs, downloaded feed copies
 data/
+feeds/
+*.xml
 
 # Python
 venv/
@@ -25,6 +28,8 @@ session_handoff.md
 tasks/
 docs/
 
-# Dashboard CSV downloads and local git-history backups
+# Dashboard CSV downloads, HubSpot exports and local git-history backups
 *.csv
+*.xlsx
+*.zip
 *.bundle
