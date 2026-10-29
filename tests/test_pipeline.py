@@ -4,8 +4,9 @@ import pytest
 
 from feed_health import pipeline
 from feed_health.config import load_settings
-from feed_health.feeds import FetchResult, JobiqoExport, parse_feed
-from feed_health.pipeline import ALL_SCOPE, EXPORT_SCOPE, ExportObservation, LastCheck, Observation, SourceState
+from feed_health.feeds import ExportOrg, FetchResult, JobiqoExport, parse_feed
+from feed_health.pipeline import (ALL_SCOPE, EXPORT_SCOPE, HUBSPOT_SCOPE, ExportObservation, LastCheck, Observation,
+                                  SourceState)
 from tests.conftest import feed_xml, jgp_job
 
 UTC = timezone.utc
@@ -135,3 +136,54 @@ def test_no_trusted_export_means_live_unknown_not_zero(settings):
     st = first_run(settings)
     out = pipeline.compute_run(RUN, settings, {ATS: st}, [Observation(ATS, settings.feed(ATS), FetchResult(304, None, None, None, None, None))], None)
     assert row(out, ATS)["live"] is None and row(out, ALL_SCOPE)["live"] is None and out.employer_live == []
+
+
+def test_export_orgs_link_to_the_feed_employer_most_of_their_jobs_come_from(settings):
+    xml = feed_xml(jgp_job("a1", org_id="934", org_name="Sefton Council"),
+                   jgp_job("a2", org_id="934", org_name="Sefton Council"),
+                   jgp_job("b1", org_id="77"), jgp_job("b2", org_id="88"))
+    ats = first_run(settings, xml=xml)
+    export = JobiqoExport(
+        ids=frozenset({"a1", "a2", "b1", "b2"}), company_by_id={}, jobs=7, organizations=3,
+        orgs={"1047": ExportOrg("1047", "Sefton Council", 3, 1), "3000": ExportOrg("3000", "Split Trust", 2, 0),
+              "4000": ExportOrg("4000", "Direct Only Ltd", 2, 2)},
+        org_by_id={"a1": "1047", "a2": "1047", "b1": "3000", "b2": "3000"})
+    export_obs = ExportObservation(FetchResult(200, b"", None, None, RUN, None), export, None)
+    unchanged = FetchResult(304, None, None, None, None, None)
+    out = pipeline.compute_run(RUN, settings, {ATS: ats}, [Observation(ATS, settings.feed(ATS), unchanged)],
+                               export_obs, prev_export_jobs=7)
+    links = {r["export_org_id"]: (r["org_key"], r["link_share"], r["jobs"], r["site_jobs"]) for r in out.export_orgs}
+    assert links == {"1047": ("jgp:934", 1.0, 3, 1),
+                     "3000": (None, None, 2, 0),      # 50/50 between two employers: below the 60% rule
+                     "4000": (None, None, 2, 2)}      # only jobs created on Jobiqo: nothing to link through
+
+
+def test_no_export_orgs_from_an_untrusted_export(settings):
+    st = first_run(settings)
+    export = JobiqoExport(ids=frozenset(), company_by_id={}, jobs=3000, orgs={"1": ExportOrg("1", "X", 3000, 0)})
+    export_obs = ExportObservation(FetchResult(200, b"", None, None, RUN, None), export, None)
+    out = pipeline.compute_run(RUN, settings, {ATS: st}, [Observation(ATS, settings.feed(ATS), FetchResult(304, None, None, None, None, None))],
+                               export_obs, prev_export_jobs=7800)
+    assert out.export_orgs == []
+
+
+def test_hubspot_sync_is_due_once_a_day_after_six_utc():
+    def at(hour, days_ago=0):
+        return datetime(2026, 10, 30, hour, tzinfo=UTC) - timedelta(days=days_ago)
+    assert pipeline.hubspot_due(at(7), None)                       # never synced
+    assert pipeline.hubspot_due(at(7), at(5))                      # last sync before today's 06:00
+    assert not pipeline.hubspot_due(at(9), at(7))                  # already synced today
+    assert not pipeline.hubspot_due(at(5), at(7, days_ago=1))      # before 06:00, yesterday's sync still counts
+    assert pipeline.hubspot_due(at(5), at(5, days_ago=1))          # ...unless yesterday's was missed
+
+
+def test_hubspot_row_keeps_the_last_good_sync_while_later_ones_fail():
+    synced = pipeline.hubspot_row(RUN, None, synced=8972, note="synced this run")
+    assert (synced["scope"], synced["build_ts"], synced["employers"], synced["error"], synced["age_hours"]) == \
+        (HUBSPOT_SCOPE, RUN, 8972, None, 0)
+    assert (synced["orange_hours"], synced["red_hours"]) == (30.0, 54.0)
+    failed = pipeline.hubspot_row(RUN + timedelta(hours=3), synced, error="HubSpot HTTP 401 (INVALID_AUTHENTICATION)")
+    assert (failed["build_ts"], failed["employers"], failed["age_hours"]) == (RUN, 8972, 3.0)
+    quiet = pipeline.hubspot_row(RUN + timedelta(hours=4), failed)     # a run that didn't try
+    assert (quiet["error"], quiet["note"], quiet["age_hours"]) == (failed["error"], None, 4.0)
+    assert pipeline.hubspot_row(RUN, None)["build_ts"] is None          # never synced: no age, no colour

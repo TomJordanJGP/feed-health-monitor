@@ -29,6 +29,8 @@ jobs:
     env:
       FEED_MAP_URL: ${{ secrets.FEED_MAP_URL }}
       JOBIQO_EXPORT_URL: ${{ secrets.JOBIQO_EXPORT_URL }}
+      # Daily HubSpot company sync (first run after 06:00 UTC). The log prints counts only.
+      HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
       BQ_PROJECT: site-monitoring-421401
       BQ_DATASET: feed_health
       BQ_LOCATION: EU

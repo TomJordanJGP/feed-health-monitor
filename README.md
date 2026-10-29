@@ -3,7 +3,8 @@
 An employer-level early-warning view of JGP's job feeds. Every hour it records:
 - whether each feed XML has been rebuilt recently (and how old it is);
 - what changed since the feed's previous version: employers and vacancies added or removed, jobs expired as expected versus removed early;
-- which vacancies aren't reaching Jobiqo.
+- which vacancies aren't reaching Jobiqo;
+- once a day, every HubSpot company and how it matches the feed employers (by Jobiqo ID, ATS ID and name), so a signed company whose jobs are in no feed shows up.
 
 The data lands in BigQuery (`site-monitoring-421401.feed_health`), and a small Streamlit dashboard shows it. Slack alerts come later.
 
@@ -22,7 +23,20 @@ The dashboard reads the production dataset (`feed_health`, written by the collec
 `FEED_HEALTH_DASHBOARD_DATASET=feed_health_dev` is set. `--server.address localhost` keeps a local run off the network.
 
 Feed URLs and keys never go in the repo: locally they come from `.env` (see `.env.example`), in the
-Action from repository secrets (`FEED_MAP_URL`, `JOBIQO_EXPORT_URL`, `FEED_HEALTH_COLLECTOR_KEY`).
+Action from repository secrets (`FEED_MAP_URL`, `JOBIQO_EXPORT_URL`, `FEED_HEALTH_COLLECTOR_KEY`,
+`HUBSPOT_TOKEN`).
+
+## HubSpot companies
+
+The first collector run after 06:00 UTC each day pulls every HubSpot company (100 per request)
+and replaces the `companies` table; `--force-hubspot` syncs on demand. Each company is matched to
+the employers seen in the feeds three ways: Jobiqo ID (the feeds' `organization_id`, or Civil
+Service's `jobiqo_id`), ATS ID (`old_account_id`) and tidied name. `match_status` is `agree`,
+`conflict` (keys found different employers), `name_only` or `no_match`, and `duplicate_on` lists
+keys another company shares. `v_companies` adds where each company's jobs are now: in a feed,
+only on Jobiqo, last seen in a feed on a date, or never seen. A HubSpot failure never fails the
+run: it's recorded on the `hubspot` row of `checks`, whose age is the time since the last
+successful sync. The run log is public, so it prints counts only.
 
 ## Deploy on Streamlit Community Cloud
 
@@ -53,6 +67,8 @@ Staleness thresholds (orange / red hours) are set in `defaults` and can be overr
 | `feed_health/feeds.py` | Conditional HTTP fetches, XML parsing, normalisers, content hash |
 | `feed_health/logic.py` | Pure logic: version diff, gone-job classification, cross-feed matching, summaries |
 | `feed_health/pipeline.py` | One run's results from the fetched feeds (pure, so tests replay it) |
+| `feed_health/hubspot.py` | HubSpot company list (paged, with retries) |
+| `feed_health/companies.py` | Pure matching of HubSpot companies to feed employers |
 | `feed_health/store.py` | BigQuery tables, views, reads and load-job writes |
 | `feed_health/collect.py` | The collector run (`python -m feed_health.collect`) |
 | `feed_health/setup.py` | Creates the datasets, grants access, creates tables and views |

@@ -7,7 +7,7 @@ logic that runs hourly is the logic that was validated.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 
 from feed_health import logic
@@ -18,6 +18,17 @@ from feed_health.logic import Clusters, DiffContext, EmployerCheck, Gap, Version
 FEED_MAP_SCOPE = "feed_map"
 EXPORT_SCOPE = "jobiqo_export"
 ALL_SCOPE = "ALL"
+HUBSPOT_SCOPE = "hubspot"
+NON_FEED_SCOPES = frozenset({FEED_MAP_SCOPE, EXPORT_SCOPE, ALL_SCOPE, HUBSPOT_SCOPE})
+
+# An export organisation is linked to a feed employer when this share of its feed jobs agree
+# (the rule used for the 29 Oct HubSpot companies x jobs export).
+EXPORT_LINK_MIN_SHARE = 0.6
+
+# HubSpot companies are synced once a day, on the first run after this hour (UTC). The status
+# row turns orange once a day's sync has been missed, red after two.
+HUBSPOT_SYNC_HOUR = 6
+HUBSPOT_ORANGE_HOURS, HUBSPOT_RED_HOURS = 30.0, 54.0
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,8 @@ class RunOutput:
     export_usable: bool
     employer_live: list[dict]      # per (source, employer): listings published on Jobiqo this run
     duplicates: list[dict]         # one row per copy of a vacancy listed in 2+ shown, imported feeds
+    export_orgs: list[dict]        # the export's employers, linked to feed employers (usable export only)
+    companies: list[dict] = field(default_factory=list)   # HubSpot companies, set by collect on a sync run
 
 
 def build_time(fetch: FetchResult, parsed: ParsedFeed, run_ts: datetime) -> datetime:
@@ -163,6 +176,11 @@ def compute_run(run_ts: datetime, settings: Settings, states: dict[str, SourceSt
                                     export.ids if export_usable else None, names)
     employer_live = [{"check_ts": run_ts, "source": s, "org_key": org, "live": n}
                      for (s, org), n in sorted(live.by_employer.items())] if live else []
+    links = logic.link_export_orgs(latest.values(), export, EXPORT_LINK_MIN_SHARE) if export_usable else {}
+    export_orgs = [{"check_ts": run_ts, "export_org_id": o.org_id, "company": o.company, "jobs": o.jobs,
+                    "site_jobs": o.site_jobs, "org_key": links.get(o.org_id, (None, None))[0],
+                    "link_share": links.get(o.org_id, (None, None))[1]}
+                   for o in sorted(export.orgs.values(), key=lambda o: o.org_id)] if export_usable else []
     duplicate_rows = [{"check_ts": run_ts, "group_id": g.group_id, "basis": g.basis, "source": m.source,
                        "job_id": m.job_id, "org_key": m.org_key, "org_name": m.org_name, "title": m.title,
                        "live": m.live} for g in groups for m in g.members]
@@ -200,7 +218,7 @@ def compute_run(run_ts: datetime, settings: Settings, states: dict[str, SourceSt
 
     return RunOutput(new_versions=new, new_version_meta=meta, employer_rows=employer_rows, gaps=gaps,
                      checks=checks, latest=latest, previous=previous, export_usable=export_usable,
-                     employer_live=employer_live, duplicates=duplicate_rows)
+                     employer_live=employer_live, duplicates=duplicate_rows, export_orgs=export_orgs)
 
 
 # --------------------------------------------------------------------------- check rows
@@ -238,6 +256,31 @@ def _plain_row(scope: str, label: str, run_ts: datetime, fetch: FetchResult | No
                    last_modified=fetch.last_modified, build_ts=fetch.last_modified,
                    age_hours=_age(run_ts, fetch.last_modified))
     row["error"] = error or (fetch.error if fetch else None)
+    return row
+
+
+def hubspot_due(run_ts: datetime, last_success: datetime | None) -> bool:
+    """Once a day: due when the last successful sync is older than the latest 06:00 UTC."""
+    boundary = run_ts.replace(hour=HUBSPOT_SYNC_HOUR, minute=0, second=0, microsecond=0)
+    if run_ts < boundary:
+        boundary -= timedelta(days=1)
+    return last_success is None or last_success < boundary
+
+
+def hubspot_row(run_ts: datetime, previous: dict | None, synced: int | None = None,
+                error: str | None = None, note: str | None = None) -> dict:
+    """The HubSpot sync's status row. build_ts is the last successful sync, so its age (and
+    colour) keeps growing while syncs fail; employers is the number of companies it wrote. A run
+    that didn't try carries the previous outcome forward, error included."""
+    prev = previous or {}
+    row = _empty_row(HUBSPOT_SCOPE, "HubSpot companies", run_ts)
+    row.update(orange_hours=HUBSPOT_ORANGE_HOURS, red_hours=HUBSPOT_RED_HOURS, note=note)
+    if synced is not None:
+        row.update(build_ts=run_ts, employers=synced)
+    else:
+        row.update(build_ts=prev.get("build_ts"), employers=prev.get("employers"),
+                   error=error if error is not None else prev.get("error"))
+    row["age_hours"] = _age(run_ts, row["build_ts"])
     return row
 
 

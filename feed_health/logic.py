@@ -283,6 +283,29 @@ def employer_names(versions: Iterable[Version], export: JobiqoExport | None) -> 
     return names
 
 
+def link_export_orgs(versions: Iterable[Version], export: JobiqoExport, min_share: float) -> dict[str, tuple[str, float]]:
+    """Each export organisation's feed employer: export_org_id -> (org_key, share). The export
+    numbers employers its own way, so the only link is the jobs both carry: the employer most of
+    the organisation's feed jobs come from, kept when at least `min_share` of them agree.
+    Organisations whose jobs were all created on Jobiqo directly get no link."""
+    employer_of_job: dict[str, str] = {}
+    for v in versions:
+        for j in v.jobs:
+            if j.org_key != "none:":
+                employer_of_job.setdefault(j.job_id, j.org_key)
+    votes: dict[str, Counter] = defaultdict(Counter)
+    for job_id, org_id in export.org_by_id.items():
+        if job_id in employer_of_job:
+            votes[org_id][employer_of_job[job_id]] += 1
+    links = {}
+    for org_id, counter in votes.items():
+        org_key, n = counter.most_common(1)[0]
+        share = n / sum(counter.values())
+        if share >= min_share:
+            links[org_id] = (org_key, round(share, 3))
+    return links
+
+
 def name_for(org_key: str, names: dict[str, str]) -> str:
     if org_key in names:
         return names[org_key]

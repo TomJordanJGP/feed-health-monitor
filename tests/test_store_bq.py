@@ -55,14 +55,14 @@ def test_crash_before_marker_then_rerun_leaves_one_copy(env):
         store.write_run(client, settings, out, {}, crash_after_version_rows=True)
     assert count(client, settings, "version_jobs", source) == 2      # rows written...
     assert count(client, settings, "feed_versions", source) == 0     # ...but no marker
-    states, _ = store.read_state(client, settings)
+    states, _, _ = store.read_state(client, settings)
     assert source not in states or states[source].latest is None     # so readers don't see it
 
     store.write_run(client, settings, out, {})                       # the rerun
     assert count(client, settings, "version_jobs", source) == 2      # orphans replaced, not doubled
     assert count(client, settings, "employer_checks", source) == 1
     assert count(client, settings, "feed_versions", source) == 1
-    states, _ = store.read_state(client, settings)
+    states, _, _ = store.read_state(client, settings)
     latest = states[source].latest
     assert latest.version_id == vid and sorted(j.job_id for j in latest.jobs) == ["a1", "a2"]
     assert states[source].last_check.etag == '"e1"'

@@ -1,10 +1,12 @@
 """Fetching and parsing feed XML, plus the normalisers that cross-feed matching relies on.
 
 All source feeds share one layout, <jobs><lastBuildDate/><job/>…</jobs>, in two schemas:
-  * JGP (ATS, scrape, backfill, Tribepad): <organization_id> and <organization_name>
-  * Civil Service: <jobiqo_id> (a different ID namespace) and no employer name
+  * JGP (ATS, scrape, backfill, Tribepad): <organization_id> and <organization_name>, and on
+    some feeds <old_account_id> (the employer's ATS account; HubSpot's "ATS Org ID")
+  * Civil Service: <jobiqo_id> and no employer name
+<organization_id> and <jobiqo_id> are the same Jobiqo numbering (HubSpot's "Jobiqo Org ID").
 Jobiqo's Appcast export lists what is live on the board: <job><external_id>, which is the
-source feed's <id>, plus <company>.
+source feed's <id>, plus <company> and an <organization_id> in the export's OWN numbering.
 """
 from __future__ import annotations
 
@@ -14,7 +16,7 @@ import io
 import re
 import unicodedata
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -154,6 +156,12 @@ def name_key(raw: str | None) -> str:
     return display_name(raw).casefold()
 
 
+def clean_id(raw: str | None) -> str:
+    """An ID as a stripped string; a numeric ID written as a float ("934.0") loses the ".0"."""
+    value = (raw or "").strip()
+    return value[:-2] if value.endswith(".0") and value[:-2].isdigit() else value
+
+
 # --------------------------------------------------------------------------- parsing
 
 @dataclass(frozen=True)
@@ -165,6 +173,7 @@ class Job:
     org_name: str           # "" for Civil Service until named from the Jobiqo export
     url_norm: str
     close_date: datetime | None
+    ats_org_id: str = ""    # <old_account_id>; kept out of the content hash (added 2026-10-29)
 
 
 @dataclass(frozen=True)
@@ -175,8 +184,9 @@ class ParsedFeed:
     content_hash: str                # over the raw fields; equal hash = no change worth a version
 
 
-# The fields the monitor stores. The content hash covers exactly these (raw), so a rebuild
-# that only reorders jobs or edits descriptions is not a new version.
+# The fields the content hash covers (raw), so a rebuild that only reorders jobs or edits
+# descriptions is not a new version. <old_account_id> is stored too but deliberately left out:
+# adding it would have made every feed's next build look like a change.
 _JOB_FIELDS = ("id", "reference", "title", "organization_id", "organization_name", "jobiqo_id",
                "url", "apply_url", "close_date")
 
@@ -209,7 +219,7 @@ def parse_feed(data: bytes, now: datetime) -> ParsedFeed:
             elif elem.tag == "job":
                 raw = {f: (elem.findtext(f) or "").strip() for f in _JOB_FIELDS}
                 raw_rows.append(tuple(raw[f] for f in _JOB_FIELDS))
-                job = _job(raw, now)
+                job = _job(raw, now, elem.findtext("old_account_id"))
                 if job.job_id in seen:
                     duplicates += 1
                 else:
@@ -228,7 +238,7 @@ def parse_feed(data: bytes, now: datetime) -> ParsedFeed:
     )
 
 
-def _job(raw: dict[str, str], now: datetime) -> Job:
+def _job(raw: dict[str, str], now: datetime, old_account_id: str | None = None) -> Job:
     if raw["organization_id"]:
         org_key, org_name = f"jgp:{raw['organization_id']}", display_name(raw["organization_name"])
     elif raw["jobiqo_id"]:
@@ -245,6 +255,7 @@ def _job(raw: dict[str, str], now: datetime) -> Job:
         org_name=org_name,
         url_norm=norm_url(raw["url"]) or norm_url(raw["apply_url"]),
         close_date=parse_feed_datetime(raw["close_date"], now),
+        ats_org_id=clean_id(old_account_id),
     )
 
 
@@ -257,17 +268,31 @@ def _hash_rows(rows: list[tuple[str, ...]]) -> str:
 
 
 @dataclass(frozen=True)
+class ExportOrg:
+    """An employer as Jobiqo's export numbers it (not the feeds' numbering)."""
+    org_id: str                    # export <organization_id>, or the company name if it has none
+    company: str
+    jobs: int                      # all its jobs live on the board
+    site_jobs: int                 # of which created on Jobiqo directly (no external_id)
+
+
+@dataclass(frozen=True)
 class JobiqoExport:
     ids: frozenset[str]            # external_ids live on Jobiqo (= source feed <id>s)
     company_by_id: dict[str, str]  # external_id -> Jobiqo company name
     jobs: int                      # all <job> elements, including site-created ones
     organizations: int = 0         # distinct Jobiqo organization_id (company name if an id is missing)
+    orgs: dict[str, ExportOrg] = field(default_factory=dict)     # by org_id
+    org_by_id: dict[str, str] = field(default_factory=dict)      # external_id -> org_id
 
 
 def parse_jobiqo_export(data: bytes) -> JobiqoExport:
     ids: set[str] = set()
     company: dict[str, str] = {}
-    orgs: set[str] = set()
+    org_company: dict[str, str] = {}
+    org_jobs: dict[str, int] = {}
+    org_site_jobs: dict[str, int] = {}
+    org_by_id: dict[str, str] = {}
     count = 0
     root = None
     depth = 0
@@ -283,19 +308,27 @@ def parse_jobiqo_export(data: bytes) -> JobiqoExport:
             depth -= 1
             if depth == 1 and elem.tag == "job":
                 count += 1
-                org = (elem.findtext("organization_id") or "").strip() or display_name(elem.findtext("company"))
-                if org:
-                    orgs.add(org)
+                name = display_name(elem.findtext("company"))
+                org = clean_id(elem.findtext("organization_id")) or name
                 ext = (elem.findtext("external_id") or "").strip()
+                if org:
+                    org_company[org] = org_company.get(org) or name
+                    org_jobs[org] = org_jobs.get(org, 0) + 1
+                    if not ext:
+                        org_site_jobs[org] = org_site_jobs.get(org, 0) + 1
                 if ext:  # site-created jobs have no external_id
                     ids.add(ext)
-                    company[ext] = display_name(elem.findtext("company"))
+                    company[ext] = name
+                    if org:
+                        org_by_id[ext] = org
                 root.clear()
     except ET.ParseError as exc:
         raise FeedParseError(f"invalid XML: {exc}") from None
     if root is None:
         raise FeedParseError("empty document")
-    return JobiqoExport(ids=frozenset(ids), company_by_id=company, jobs=count, organizations=len(orgs))
+    orgs = {o: ExportOrg(o, org_company[o], org_jobs[o], org_site_jobs.get(o, 0)) for o in org_jobs}
+    return JobiqoExport(ids=frozenset(ids), company_by_id=company, jobs=count, organizations=len(orgs),
+                        orgs=orgs, org_by_id=org_by_id)
 
 
 @dataclass(frozen=True)

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from feed_health import feeds
-from feed_health.feeds import FeedParseError, norm_url, parse_feed, parse_feed_datetime, ref_is_usable
+from feed_health.feeds import ExportOrg, FeedParseError, clean_id, norm_url, parse_feed, parse_feed_datetime, ref_is_usable
 from tests.conftest import cs_job, feed_xml, jgp_job
 
 UTC = timezone.utc
@@ -120,6 +120,17 @@ class TestParseFeed:
         two = parse_feed(feed_xml(jgp_job("a1", close_date="10/08/2026 23:00:00")), now)
         assert one.content_hash != two.content_hash
 
+    def test_old_account_id_is_kept_but_not_hashed(self, now):
+        one = parse_feed(feed_xml(jgp_job("a1")), now)
+        two = parse_feed(feed_xml(jgp_job("a1", old_account_id=" 5512.0 ")), now)
+        assert one.content_hash == two.content_hash   # else every feed's next build would look changed
+        assert (one.jobs[0].ats_org_id, two.jobs[0].ats_org_id) == ("", "5512")
+
+
+@pytest.mark.parametrize("raw, cleaned", [("934", "934"), (" 934.0 ", "934"), ("", ""), (None, ""), ("A1.0", "A1.0")])
+def test_clean_id(raw, cleaned):
+    assert clean_id(raw) == cleaned
+
 
 def test_jobiqo_export_ids_and_companies():
     data = (b"<jobs>"
@@ -132,6 +143,9 @@ def test_jobiqo_export_ids_and_companies():
     assert export.ids == {"a1", "b2"} and export.jobs == 3
     assert export.organizations == 2   # one org id shared by two jobs, plus one org known only by name
     assert export.company_by_id == {"a1": "Surrey County Council", "b2": "No Id Org"}
+    assert export.orgs == {"31727": ExportOrg("31727", "Surrey County Council", jobs=2, site_jobs=1),
+                           "No Id Org": ExportOrg("No Id Org", "No Id Org", jobs=1, site_jobs=0)}
+    assert export.org_by_id == {"a1": "31727", "b2": "No Id Org"}   # feed job ids -> the export's numbering
 
 
 def test_feed_map():

@@ -3,7 +3,8 @@
 Writes are load jobs only (never streaming inserts), because rows from a recent streaming
 insert can't be deleted, and the crash cleanup below deletes rows. Commit order:
   per new version: version_jobs + employer_checks, then feed_versions (the version marker)
-  per run:         jobiqo_gaps, then checks (the run marker, one load job)
+  per run:         jobiqo_gaps, employer_live, duplicates, export_orgs; on a HubSpot sync
+                   run, companies (replaced whole); then checks (the run marker, one load job)
 Readers go through the markers: a version exists only once it is in feed_versions, and a
 run's gaps count only if the run's checks rows exist. Before a version is written, any rows
 left under its (deterministic) id by an interrupted run are deleted, so a rerun leaves one copy.
@@ -18,10 +19,11 @@ from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 from google.oauth2.service_account import Credentials
 
+from feed_health.companies import Employer
 from feed_health.config import Settings
 from feed_health.feeds import Job
 from feed_health.logic import Version
-from feed_health.pipeline import CHECK_FIELDS, LastCheck, RunOutput, SourceState
+from feed_health.pipeline import CHECK_FIELDS, HUBSPOT_SCOPE, NON_FEED_SCOPES, LastCheck, RunOutput, SourceState
 
 SCOPES = ["https://www.googleapis.com/auth/bigquery"]
 
@@ -52,7 +54,8 @@ SCHEMAS: dict[str, list[bigquery.SchemaField]] = {
     "version_jobs": _schema(
         ("version_id", "str", "REQUIRED"), ("source", "str", "REQUIRED"), ("build_ts", "ts", "REQUIRED"),
         ("job_id", "str", "REQUIRED"), ("reference", "str"), ("org_key", "str"), ("org_name", "str"),
-        ("title", "str"), ("url_norm", "str"), ("close_date", "ts"), ("first_seen_ts", "ts")),
+        ("title", "str"), ("url_norm", "str"), ("close_date", "ts"), ("first_seen_ts", "ts"),
+        ("ats_org_id", "str")),   # added 2026-10-29: <old_account_id>
     "employer_checks": _schema(
         ("version_id", "str", "REQUIRED"), ("prev_version_id", "str"), ("source", "str", "REQUIRED"),
         ("build_ts", "ts", "REQUIRED"), ("prev_build_ts", "ts"), ("org_key", "str", "REQUIRED"), ("org_name", "str"),
@@ -66,9 +69,19 @@ SCHEMAS: dict[str, list[bigquery.SchemaField]] = {
     "duplicates": _schema(
         ("check_ts", "ts", "REQUIRED"), ("group_id", "str", "REQUIRED"), ("basis", "str"), ("source", "str", "REQUIRED"),
         ("job_id", "str", "REQUIRED"), ("org_key", "str"), ("org_name", "str"), ("title", "str"), ("live", "bool")),
+    # The export's employers (its own numbering), linked to a feed employer by shared job IDs.
+    "export_orgs": _schema(
+        ("check_ts", "ts", "REQUIRED"), ("export_org_id", "str", "REQUIRED"), ("company", "str"), ("jobs", "int"),
+        ("site_jobs", "int"), ("org_key", "str"), ("link_share", "float")),
+    # HubSpot companies and how they match the feed employers: replaced whole on each daily sync.
+    "companies": _schema(
+        ("synced_ts", "ts", "REQUIRED"), ("hubspot_id", "str", "REQUIRED"), ("name", "str"), ("jobiqo_id", "str"),
+        ("ats_org_id", "str"), ("lifecycle_stage", "str"), ("match_status", "str"), ("matched_by", "str"),
+        ("matched_org_keys", "str", "REPEATED"), ("feed_name", "str"), ("export_org_ids", "str", "REPEATED"),
+        ("duplicate_on", "str"), ("duplicate_ids", "str", "REPEATED"), ("notes", "str")),
 }
 PARTITION_FIELD = {"version_jobs": "build_ts", "jobiqo_gaps": "check_ts", "employer_live": "check_ts",
-                   "duplicates": "check_ts"}
+                   "duplicates": "check_ts", "export_orgs": "check_ts"}
 CLUSTER_FIELDS = {"version_jobs": ["source", "org_key"], "jobiqo_gaps": ["source"], "employer_live": ["source"],
                   "duplicates": ["source"]}
 
@@ -240,14 +253,61 @@ SELECT d.group_id, d.basis, d.source, cfg.label, d.job_id, d.org_key, d.org_name
 FROM `{t('duplicates')}` d
 JOIN run ON d.check_ts = run.ts
 LEFT JOIN cfg USING (source)""",
+
+        "v_companies": f"""
+CREATE OR REPLACE VIEW `{t('v_companies')}` AS
+-- One row per HubSpot company (the latest daily sync): how it matched the feed employers, and
+-- where its jobs are now. jobs_status: in_feeds (in a shown feed's latest version), jobiqo_only
+-- (on the board but in no feed: posted on Jobiqo directly), last_seen (in a feed since the
+-- monitor began, not now: see last_in_feed_ts), never_seen.
+WITH export_run AS (
+  SELECT MAX(check_ts) AS ts FROM `{t('export_orgs')}`
+),
+feed_now AS (
+  SELECT c.hubspot_id, SUM(e.jobs_now) AS feed_jobs, SUM(e.on_jobiqo) AS feed_jobs_on_jobiqo
+  FROM `{t('companies')}` c
+  CROSS JOIN UNNEST(c.matched_org_keys) AS k
+  JOIN `{t('v_employers')}` e ON e.org_key = k
+  WHERE e.show
+  GROUP BY 1
+),
+jobiqo_now AS (
+  SELECT c.hubspot_id, SUM(x.jobs) AS jobiqo_jobs, SUM(x.site_jobs) AS jobiqo_site_jobs
+  FROM `{t('companies')}` c
+  CROSS JOIN UNNEST(c.export_org_ids) AS k
+  JOIN `{t('export_orgs')}` x ON x.export_org_id = k
+  JOIN export_run ON x.check_ts = export_run.ts
+  GROUP BY 1
+),
+history AS (
+  SELECT c.hubspot_id, MAX(IF(h.jobs_now > 0, h.build_ts, NULL)) AS last_in_feed_ts
+  FROM `{t('companies')}` c
+  CROSS JOIN UNNEST(c.matched_org_keys) AS k
+  JOIN `{t('employer_checks')}` h ON h.org_key = k
+  GROUP BY 1
+)
+SELECT
+  c.*,
+  COALESCE(f.feed_jobs, 0) AS feed_jobs, f.feed_jobs_on_jobiqo,
+  COALESCE(j.jobiqo_jobs, 0) AS jobiqo_jobs, j.jobiqo_site_jobs, h.last_in_feed_ts,
+  CASE
+    WHEN COALESCE(f.feed_jobs, 0) > 0 THEN 'in_feeds'
+    WHEN COALESCE(j.jobiqo_jobs, 0) > 0 THEN 'jobiqo_only'
+    WHEN h.last_in_feed_ts IS NOT NULL THEN 'last_seen'
+    ELSE 'never_seen'
+  END AS jobs_status
+FROM `{t('companies')}` c
+LEFT JOIN feed_now f USING (hubspot_id)
+LEFT JOIN jobiqo_now j USING (hubspot_id)
+LEFT JOIN history h USING (hubspot_id)""",
     }
 
 
 # --------------------------------------------------------------------------- reads
 
-def read_state(client: bigquery.Client, settings: Settings) -> tuple[dict[str, SourceState], int | None]:
+def read_state(client: bigquery.Client, settings: Settings) -> tuple[dict[str, SourceState], int | None, dict | None]:
     """Everything the next run needs: each source's latest two committed versions (with jobs)
-    and its last check row; plus the previous Jobiqo export job count."""
+    and its last check row; the previous Jobiqo export job count; the last HubSpot status row."""
     t = settings.table
     with ThreadPoolExecutor(max_workers=2) as pool:  # independent reads: run them side by side
         versions_future = pool.submit(lambda: list(client.query_and_wait(f"""
@@ -266,7 +326,8 @@ def read_state(client: bigquery.Client, settings: Settings) -> tuple[dict[str, S
         params = [bigquery.ArrayQueryParameter("ids", "STRING", [v["version_id"] for v in versions]),
                   bigquery.ArrayQueryParameter("days", "DATE", sorted({v["build_ts"].date() for v in versions}))]
         for r in client.query_and_wait(f"""
-            SELECT version_id, job_id, reference, title, org_key, org_name, url_norm, close_date, first_seen_ts
+            SELECT version_id, job_id, reference, title, org_key, org_name, url_norm, close_date, first_seen_ts,
+                   ats_org_id
             FROM `{t('version_jobs')}`
             WHERE version_id IN UNNEST(@ids) AND DATE(build_ts) IN UNNEST(@days)
         """, job_config=bigquery.QueryJobConfig(query_parameters=params)):
@@ -277,21 +338,48 @@ def read_state(client: bigquery.Client, settings: Settings) -> tuple[dict[str, S
         ranked[v["source"]].append(v)
 
     states: dict[str, SourceState] = {}
-    for source in ranked.keys() | (last_checks.keys() - {"ALL", "feed_map", "jobiqo_export"}):
+    for source in ranked.keys() | (last_checks.keys() - NON_FEED_SCOPES):
         rows = ranked.get(source, [])
         latest = _version(rows[0], jobs_by_version) if rows else None
         previous = _version(rows[1], jobs_by_version) if len(rows) > 1 else None
         states[source] = SourceState(latest=latest, latest_hash=rows[0]["content_hash"] if rows else None,
                                      previous=previous, last_check=_last_check(last_checks.get(source)))
     export = last_checks.get("jobiqo_export")
-    return states, (export["jobs"] if export else None)
+    hubspot = last_checks.get(HUBSPOT_SCOPE)
+    return states, (export["jobs"] if export else None), (dict(hubspot.items()) if hubspot else None)
+
+
+def read_employers(client: bigquery.Client, settings: Settings) -> dict[str, Employer]:
+    """Every employer seen in a feed since the monitor began: its names (from the employer
+    checks, which hold Civil Service's names too) and its ATS IDs (from the stored jobs)."""
+    t = settings.table
+    rows = client.query_and_wait(f"""
+        WITH named AS (
+          SELECT org_key, ARRAY_AGG(org_name ORDER BY build_ts DESC LIMIT 1)[OFFSET(0)] AS name,
+                 ARRAY_AGG(DISTINCT org_name) AS names
+          FROM `{t('employer_checks')}`
+          WHERE org_key != 'none:' AND COALESCE(org_name, '') != ''
+          GROUP BY org_key
+        ),
+        with_ats AS (
+          SELECT org_key, ARRAY_AGG(DISTINCT ats_org_id) AS ats_ids
+          FROM `{t('version_jobs')}`
+          WHERE org_key != 'none:' AND COALESCE(ats_org_id, '') != ''
+          GROUP BY org_key
+        )
+        SELECT org_key, named.name, named.names, with_ats.ats_ids
+        FROM named FULL OUTER JOIN with_ats USING (org_key)
+    """)
+    return {r["org_key"]: Employer(r["org_key"], r["name"] or "", frozenset(r["names"] or ()),
+                                   frozenset(r["ats_ids"] or ())) for r in rows}
 
 
 def _version(meta, jobs_by_version) -> Version:
     rows = jobs_by_version.get(meta["version_id"], [])
     jobs = tuple(Job(job_id=r["job_id"], reference=r["reference"] or "", title=r["title"] or "",
                      org_key=r["org_key"] or "none:", org_name=r["org_name"] or "",
-                     url_norm=r["url_norm"] or "", close_date=r["close_date"]) for r in rows)
+                     url_norm=r["url_norm"] or "", close_date=r["close_date"],
+                     ats_org_id=r["ats_org_id"] or "") for r in rows)
     first = {r["job_id"]: r["first_seen_ts"] for r in rows if r["first_seen_ts"]}
     return Version(meta["source"], meta["version_id"], meta["build_ts"], jobs, first)
 
@@ -311,8 +399,9 @@ def _jsonable(value):
     return value
 
 
-def _load(client: bigquery.Client, settings: Settings, table: str, rows: list[dict]) -> bigquery.LoadJob:
-    config = bigquery.LoadJobConfig(schema=SCHEMAS[table], write_disposition="WRITE_APPEND",
+def _load(client: bigquery.Client, settings: Settings, table: str, rows: list[dict],
+          write_disposition: str = "WRITE_APPEND") -> bigquery.LoadJob:
+    config = bigquery.LoadJobConfig(schema=SCHEMAS[table], write_disposition=write_disposition,
                                     source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON)
     return client.load_table_from_json([{k: _jsonable(v) for k, v in r.items()} for r in rows],
                                        settings.table(table), job_config=config)
@@ -342,7 +431,8 @@ def version_rows(out: RunOutput, states: dict[str, SourceState]) -> tuple[list[d
             job_rows.append({"version_id": v.version_id, "source": source, "build_ts": v.build_ts,
                              "job_id": j.job_id, "reference": j.reference, "org_key": j.org_key,
                              "org_name": j.org_name, "title": j.title, "url_norm": j.url_norm,
-                             "close_date": j.close_date, "first_seen_ts": v.first_seen_of(j.job_id)})
+                             "close_date": j.close_date, "first_seen_ts": v.first_seen_of(j.job_id),
+                             "ats_org_id": j.ats_org_id or None})
         m = out.new_version_meta[source]
         version_meta.append({"version_id": v.version_id, "source": source, "build_ts": v.build_ts,
                              "last_build_date": m["last_build_date"], "first_seen_ts": m["first_seen_ts"],
@@ -372,6 +462,9 @@ def write_run(client: bigquery.Client, settings: Settings, out: RunOutput,
                          "close_date": g.close_date} for g in out.gaps],
         "employer_live": out.employer_live,
         "duplicates": out.duplicates,
+        "export_orgs": out.export_orgs,
     }
     _wait(*[_load(client, settings, name, rows) for name, rows in per_run.items() if rows])
+    if out.companies:
+        _wait(_load(client, settings, "companies", out.companies, write_disposition="WRITE_TRUNCATE"))
     _wait(_load(client, settings, "checks", out.checks))

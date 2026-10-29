@@ -3,7 +3,7 @@ URLs and BigQuery. Locally the environment comes from `.env`; in CI, from reposi
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -47,6 +47,7 @@ class Settings:
     bq_dataset: str
     bq_location: str
     credentials_path: Path | None
+    hubspot_token: str = field(default="", repr=False)   # optional: no token, no company sync
 
     def feed(self, file: str) -> FeedConfig:
         """Config for a feed file. A file on the feed map but missing from feeds.yml is checked
@@ -125,4 +126,5 @@ def load_settings(config_path: Path = CONFIG_PATH, require_urls: bool = True) ->
         bq_dataset=os.environ.get("BQ_DATASET", "feed_health_dev"),
         bq_location=os.environ.get("BQ_LOCATION", "EU"),
         credentials_path=credentials_path,
+        hubspot_token=os.environ.get("HUBSPOT_TOKEN", "").strip(),
     )

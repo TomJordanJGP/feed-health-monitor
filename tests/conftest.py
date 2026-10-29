@@ -10,7 +10,7 @@ NOW = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
 
 def jgp_job(job_id: str, org_id: str = "116", org_name: str = "Surrey County Council", *,
             reference: str = "", title: str = "Social Worker", url: str = "", apply_url: str = "",
-            close_date: str = "", description: str = "Role description") -> str:
+            close_date: str = "", description: str = "Role description", old_account_id: str | None = None) -> str:
     return (
         "<job>"
         f"<id><![CDATA[{job_id}]]></id>"
@@ -22,7 +22,8 @@ def jgp_job(job_id: str, org_id: str = "116", org_name: str = "Surrey County Cou
         f"<apply_url><![CDATA[{apply_url}]]></apply_url>"
         f"<close_date><![CDATA[{close_date}]]></close_date>"
         f"<description><![CDATA[{description}]]></description>"
-        "</job>"
+        + (f"<old_account_id><![CDATA[{old_account_id}]]></old_account_id>" if old_account_id is not None else "")
+        + "</job>"
     )
 
 
