@@ -5,10 +5,12 @@
 #   collect   fetch and store this feed
 #   show      display it in the dashboard
 #   imported  Jobiqo imports it. The all-feeds totals cover feeds that are both shown and imported,
-#             and only imported feeds count as a "moved to another feed" destination.
+#             and only imported feeds count as a "moved to another feed" destination. Jobs from a
+#             feed that isn't imported that are missing on Jobiqo show as "not imported", not as
+#             "not reaching Jobiqo".
 #
-# A feed that appears in the map but isn't listed here is collected, flagged "unconfigured"
-# in the status view, and kept out of the summary until it's added.
+# Every feed on the map is checked. One that isn't listed here is treated as collected, shown
+# and imported, under its file name, with a "not in config/feeds.yml" note until it's added.
 
 defaults:
   orange_hours: 5        # feed status turns orange when the XML is older than this at the check
@@ -58,11 +60,16 @@ feeds:
     collect: true
     show: true
     imported: true
+  jgp_myjobscotland_feed.xml:
+    label: "JGP | Myjobscotland"
+    collect: true
+    show: true
+    imported: true
   jgp_tribepad_feed.xml:
     label: "JGP Tribepad"
     collect: true
-    show: false          # collected but hidden for now (Tom, 2026-09-29)
-    imported: false      # not a Jobiqo importer
+    show: true           # shown since 2026-10-29; hidden before (Tom)
+    imported: false      # not a Jobiqo importer: its missing jobs show as "not imported"
   jgp_test_feed.xml:
     label: "JGP Test"
     collect: false       # vendor's review feed; excluded (Tom, 2026-09-28)

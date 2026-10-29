@@ -44,17 +44,17 @@ class TestTimes:
 
 def status_frame():
     rows = [
-        dict(scope="civil_service_jobs_uk.xml", label="JGP scrape | Civil Service Jobs UK", show=True, configured=True,
+        dict(scope="civil_service_jobs_uk.xml", label="JGP scrape | Civil Service Jobs UK", show=True, imported=True, configured=True,
              status="green", build_ts=ts(2026, 9, 29, 11, 48), age_hours=1.5, jobs=1307, employers=105, error=None, note=None, export_status=None),
-        dict(scope="jgp_scraping_feed.xml", label="JGP scrape", show=True, configured=True,
+        dict(scope="jgp_scraping_feed.xml", label="JGP scrape", show=True, imported=True, configured=True,
              status="red", build_ts=ts(2026, 9, 28, 18, 2), age_hours=17.5, jobs=818, employers=45, error=None, note=None, export_status=None),
-        dict(scope="jgp_tribepad_feed.xml", label="JGP Tribepad", show=False, configured=True,
+        dict(scope="jgp_tribepad_feed.xml", label="JGP Tribepad", show=True, imported=False, configured=True,
              status="green", build_ts=ts(2026, 9, 29, 11, 48), age_hours=1.5, jobs=388, employers=14, error=None, note=None, export_status=None),
-        dict(scope="new_feed.xml", label="new_feed.xml", show=True, configured=False,
+        dict(scope="new_feed.xml", label="new_feed.xml", show=True, imported=True, configured=False,
              status="error", build_ts=pd.NaT, age_hours=None, jobs=None, employers=None, error="HTTP 404", note=None, export_status=None),
-        dict(scope="jobiqo_export", label="Jobiqo export (Appcast)", show=None, configured=None,
+        dict(scope="jobiqo_export", label="Jobiqo export (Appcast)", show=None, imported=None, configured=None,
              status="green", build_ts=ts(2026, 9, 29, 13, 2), age_hours=0.2, jobs=7915, employers=446, error=None, note=None, export_status="ok"),
-        dict(scope="ALL", label="All feeds", show=None, configured=None, status=None, build_ts=pd.NaT,
+        dict(scope="ALL", label="All feeds", show=None, imported=None, configured=None, status=None, build_ts=pd.NaT,
              age_hours=None, jobs=8624, employers=445, error=None, note=None, export_status="ok"),
     ]
     return pd.DataFrame(rows)
@@ -62,13 +62,23 @@ def status_frame():
 
 def test_incoming_table_with_total_row():
     table = helpers.incoming_table(status_frame())
-    assert list(table["Feed"]) == ["new_feed.xml", "JGP scrape", "JGP scrape | Civil Service Jobs UK", "Total"]
-    new = table.iloc[0]      # hidden Tribepad, the export and the ALL row are not incoming rows
+    assert list(table["Feed"]) == ["new_feed.xml", "JGP scrape", "JGP scrape | Civil Service Jobs UK", "JGP Tribepad",
+                                   "Total"]   # the export and the ALL row are not incoming rows
+    new = table.iloc[0]
     assert new["Status"] == "⚠️ Error" and "HTTP 404" in new["Notes"] and "not in config" in new["Notes"]
+    assert "not imported" not in new["Notes"]
     assert table.iloc[1]["Status"] == "🔴 Stale" and table.iloc[1]["Last built"] == "Mon 28 Sep, 19:02"
+    tribepad = table.iloc[3]
+    assert (tribepad["Jobs"], tribepad["Notes"]) == ("388", "not imported by Jobiqo")
     total = table.iloc[-1]
-    assert (total["Jobs"], total["Employers"]) == ("2,125", "150")    # 818 + 1,307 and 45 + 105
+    assert (total["Jobs"], total["Employers"]) == ("2,125", "150")    # 818 + 1,307 and 45 + 105: no Tribepad
     pa.Table.from_pandas(table)
+
+
+def test_hidden_feed_is_not_listed():
+    status = status_frame()
+    status.loc[status["scope"] == "jgp_tribepad_feed.xml", "show"] = False
+    assert "JGP Tribepad" not in set(helpers.incoming_table(status)["Feed"])
 
 
 def test_outgoing_table_counts_export_employers():
@@ -110,14 +120,17 @@ def test_summary_totals_are_plain_sums_plus_duplicates():
 
 def employers_frame():
     base = dict(label="JGP scrape", show=True, jobs_prev=10, jobs_now=10, on_jobiqo=10, expired=0, removed_unexpected=0,
-                removed_no_close=0, moved=0, not_reaching=0, still_showing=True, last_seen_ts=pd.NaT,
+                removed_no_close=0, moved=0, not_reaching=0, not_imported=None, still_showing=True, last_seen_ts=pd.NaT,
                 this_check_ts=ts(2026, 9, 29, 9, 2), last_check_ts=ts(2026, 9, 28, 9, 2))
     return pd.DataFrame([
         {**base, "org_name": "Kent County Council"},
         {**base, "org_name": "Surrey County Council", "jobs_prev": 67, "jobs_now": 0, "removed_unexpected": 67,
          "still_showing": False, "last_seen_ts": ts(2026, 9, 28, 9, 2)},
         {**base, "org_name": "Medway Council", "not_reaching": 3},
-        {**base, "org_name": "Hidden Tribepad Org", "label": "JGP Tribepad", "show": False, "removed_unexpected": 5},
+        {**base, "org_name": "Hidden Org", "label": "JGP Hidden", "show": False, "removed_unexpected": 5},
+        # A feed Jobiqo doesn't import: its missing jobs are "not imported", which isn't an issue.
+        {**base, "org_name": "Tribepad Only Trust", "label": "JGP Tribepad", "on_jobiqo": 4, "not_reaching": None,
+         "not_imported": 6},
         {**base, "org_name": "Milton Keynes Council", "label": "JGP scrape | JGP Backfill", "jobs_prev": 28,
          "jobs_now": 12, "removed_no_close": 17},
         # A feed's first version: nothing to compare yet, so the counts are NULL (pd.NA from BigQuery).
@@ -140,6 +153,17 @@ def test_all_employers_with_filters():
     assert helpers.employers_table(employers_frame(), search="milton").iloc[0]["Removed (no closing date)"] == 17
     cols = list(table.columns)
     assert cols.index("On Jobiqo") == cols.index("Jobs this check") + 1
+    pa.Table.from_pandas(table)
+
+
+def test_not_imported_is_shown_but_not_an_issue():
+    table = helpers.employers_table(employers_frame(), feeds=["JGP Tribepad"])
+    (r,) = table.to_dict("records")
+    assert (r["Employer"], r["Not imported"], r["On Jobiqo"]) == ("Tribepad Only Trust", 6, 4)
+    assert pd.isna(r["Not reaching Jobiqo"])
+    assert helpers.employers_table(employers_frame(), feeds=["JGP Tribepad"], issues_only=True).empty
+    cols = list(table.columns)
+    assert cols.index("Not imported") == cols.index("Not reaching Jobiqo") + 1
     pa.Table.from_pandas(table)
 
 

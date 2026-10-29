@@ -40,9 +40,9 @@ Action from repository secrets (`FEED_MAP_URL`, `JOBIQO_EXPORT_URL`, `FEED_HEALT
 Edit `config/feeds.yml`. Feeds are keyed by their XML file name. Each has three flags:
 - `collect`: fetch and store it.
 - `show`: display it in the dashboard.
-- `imported`: whether Jobiqo imports it; only imported feeds count in the all-feeds totals.
+- `imported`: whether Jobiqo imports it; only imported feeds count in the all-feeds totals. A feed Jobiqo doesn't import (Tribepad) is still shown, and its jobs missing from Jobiqo count as "not imported" rather than "not reaching Jobiqo".
 
-A feed that appears in `feed_map.xml` without an entry is still collected. It shows as "unconfigured" in the status view until it's added.
+Every feed in `feed_map.xml` is checked. One without an entry is treated as collected, shown and imported, under its file name, with a "not in config/feeds.yml" note in the status view until it's added.
 
 Staleness thresholds (orange / red hours) are set in `defaults` and can be overridden per feed.
 

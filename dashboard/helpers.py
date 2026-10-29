@@ -82,6 +82,8 @@ def _status_rows(rows: pd.DataFrame) -> pd.DataFrame:
         parts = [r["error"]] if isinstance(r["error"], str) else []
         if isinstance(r.get("note"), str):
             parts.append(r["note"])
+        if r["scope"].endswith(".xml") and not bool(r["imported"]):
+            parts.append("not imported by Jobiqo")
         if r["scope"].endswith(".xml") and not bool(r["configured"]):
             parts.append("not in config/feeds.yml")
         if r["scope"] == "jobiqo_export" and isinstance(r.get("export_status"), str) and r["export_status"] != "ok":
@@ -100,10 +102,12 @@ def _status_rows(rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def incoming_table(status: pd.DataFrame) -> pd.DataFrame:
-    """The feeds Jobiqo imports from (shown ones, plus any not yet in config), stalest first."""
+    """The shown feeds on the feed map, stalest first. A feed Jobiqo doesn't import (Tribepad)
+    is listed with a note but left out of the Total, which counts what Jobiqo takes in."""
     rows = status[status["scope"].str.endswith(".xml") & truthy(status["show"])]
     rows = rows.sort_values("age_hours", ascending=False, na_position="first")
-    return _with_total(_status_rows(rows), "Feed", {"Jobs": rows["jobs"], "Employers": rows["employers"]})
+    imported = rows[truthy(rows["imported"])]
+    return _with_total(_status_rows(rows), "Feed", {"Jobs": imported["jobs"], "Employers": imported["employers"]})
 
 
 def outgoing_table(status: pd.DataFrame) -> pd.DataFrame:
@@ -148,7 +152,8 @@ def summary_totals(summary: pd.DataFrame) -> dict:
 def issue_mask(rows: pd.DataFrame) -> pd.Series:
     """An employer needs a look if it stopped showing, lost jobs before their closing dates, or
     has jobs that aren't reaching Jobiqo. Removals with no closing date are shown but not
-    flagged: Backfill V1 has no closing dates at all, so they happen every day. Counts are NA
+    flagged: Backfill V1 has no closing dates at all, so they happen every day. Nor are jobs in
+    a feed Jobiqo doesn't import (not_imported): those are expected to be missing. Counts are NA
     on a feed's first version (nothing to compare), which is not an issue."""
     return (~truthy(rows["still_showing"])
             | rows["removed_unexpected"].fillna(0).gt(0)
@@ -159,7 +164,7 @@ def employers_table(employers: pd.DataFrame, feeds: list[str] | None = None, sea
                     issues_only: bool = False) -> pd.DataFrame:
     rows = employers[truthy(employers["show"])].copy()
     for col in ("jobs_prev", "jobs_now", "on_jobiqo", "expired", "removed_unexpected", "removed_no_close", "moved",
-                "not_reaching"):
+                "not_reaching", "not_imported"):
         rows[col] = _int(rows[col])
     if feeds:
         rows = rows[rows["label"].isin(feeds)]
@@ -188,6 +193,7 @@ def employers_table(employers: pd.DataFrame, feeds: list[str] | None = None, sea
         "Removed (no closing date)": rows["removed_no_close"],
         "Moved to another feed": rows["moved"],
         "Not reaching Jobiqo": rows["not_reaching"],
+        "Not imported": rows["not_imported"],
         "This check": rows["this_check_ts"].map(uk_time),
         "Last check": rows.apply(lambda r: uk_time(r["last_check_ts"]) if not pd.isna(r["last_check_ts"])
                                  else ("first check" if r["still_showing"] else DASH), axis=1)

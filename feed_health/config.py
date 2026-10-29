@@ -49,11 +49,12 @@ class Settings:
     credentials_path: Path | None
 
     def feed(self, file: str) -> FeedConfig:
-        """Config for a feed file. A file missing from feeds.yml is still collected, but
-        flagged unconfigured and not counted as imported, so it stays out of the summary."""
+        """Config for a feed file. A file on the feed map but missing from feeds.yml is checked
+        like any imported feed (Jobiqo imports everything on the map); `configured=False` only
+        adds a note in the status view so someone gives it a label."""
         if file in self.feeds:
             return self.feeds[file]
-        return FeedConfig(file=file, label=file, collect=True, show=True, imported=False,
+        return FeedConfig(file=file, label=file, collect=True, show=True, imported=True,
                           orange_hours=self.default_orange_hours, red_hours=self.default_red_hours,
                           configured=False)
 

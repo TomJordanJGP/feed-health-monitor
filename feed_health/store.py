@@ -141,7 +141,7 @@ WHERE check_ts = (SELECT MAX(check_ts) FROM `{t('checks')}`)""",
 
         "v_summary": f"""
 CREATE OR REPLACE VIEW `{t('v_summary')}` AS
--- The latest run's summary: the all-feeds total plus each configured, shown feed. Added and
+-- The latest run's summary: the all-feeds total plus each shown feed that Jobiqo imports. Added and
 -- removed compare each feed's latest version (this_version_ts) with the one before it
 -- (prev_version_ts); NULL deltas mean the feed has only one version so far.
 WITH versions AS (
@@ -159,12 +159,14 @@ FROM `{t('checks')}` c
 LEFT JOIN versions cur ON cur.source = c.scope AND cur.rn = 1
 LEFT JOIN versions prev ON prev.source = c.scope AND prev.rn = 2
 WHERE c.check_ts = (SELECT MAX(check_ts) FROM `{t('checks')}`)
-  AND (c.scope = 'ALL' OR (c.configured AND c.collect AND c.show))""",
+  AND (c.scope = 'ALL' OR (c.collect AND c.show AND c.imported))""",
 
         "v_employers": f"""
 CREATE OR REPLACE VIEW `{t('v_employers')}` AS
 -- One row per employer per feed for each feed's latest version (joined through the
 -- feed_versions marker), plus employers seen in the last 14 days that are absent now.
+-- Jobs missing from Jobiqo count as not_reaching for a feed Jobiqo imports, and as
+-- not_imported for one it doesn't (Tribepad): the same gap, but expected there.
 WITH run AS (
   SELECT MAX(check_ts) AS ts FROM `{t('checks')}`
 ),
@@ -204,6 +206,7 @@ SELECT
   r.jobs_prev, r.jobs_now, live.on_jobiqo, r.added, r.expired, r.removed_unexpected, r.removed_no_close,
   r.moved, r.rehashed,
   IF(cfg.imported, COALESCE(g.not_reaching, 0), NULL) AS not_reaching,
+  IF(cfg.imported, NULL, COALESCE(g.not_reaching, 0)) AS not_imported,
   r.build_ts AS this_check_ts, r.prev_build_ts AS last_check_ts,
   cfg.show, cfg.imported, cfg.configured
 FROM current_rows r
@@ -215,7 +218,7 @@ UNION ALL
 SELECT
   cfg.label, s.source, s.org_key, s.org_name, FALSE, s.last_seen_ts,
   NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-  NULL, l.build_ts, NULL,
+  NULL, NULL, l.build_ts, NULL,
   cfg.show, cfg.imported, cfg.configured
 FROM seen s
 JOIN latest l USING (source)

@@ -83,17 +83,36 @@ def test_untrusted_export_disables_not_reaching_everywhere(settings):
     assert out.gaps == []
 
 
-def test_totals_cover_only_shown_imported_configured_feeds(settings):
-    ats = first_run(settings)
-    tribepad = first_run(settings, "jgp_tribepad_feed.xml", feed_xml(jgp_job("t1"), jgp_job("t2"), jgp_job("t3")))
-    stranger = first_run(settings, "brand_new_feed.xml", feed_xml(jgp_job("n1")))
+TRIBEPAD, NEW_FEED = "jgp_tribepad_feed.xml", "brand_new_feed.xml"
+
+
+def tribepad_and_new_feed_run(settings, export_obs=None, prev_export_jobs=None):
+    """ATS (a1, a2), Tribepad (t1-t3, not imported) and a feed missing from feeds.yml (n1)."""
+    states = {ATS: first_run(settings),
+              TRIBEPAD: first_run(settings, TRIBEPAD, feed_xml(jgp_job("t1"), jgp_job("t2"), jgp_job("t3"))),
+              NEW_FEED: first_run(settings, NEW_FEED, feed_xml(jgp_job("n1")))}
     unchanged = FetchResult(304, None, None, None, None, None)
-    obs = [Observation(s, settings.feed(s), unchanged, note="not listed in feed_map.xml" if s == "brand_new_feed.xml" else None)
-           for s in (ATS, "jgp_tribepad_feed.xml", "brand_new_feed.xml")]
-    out = pipeline.compute_run(RUN, settings, {ATS: ats, "jgp_tribepad_feed.xml": tribepad, "brand_new_feed.xml": stranger}, obs, None)
-    assert row(out, ALL_SCOPE)["jobs"] == 2       # ATS only: Tribepad isn't imported, the new feed isn't configured
-    assert row(out, "brand_new_feed.xml")["configured"] is False
-    assert row(out, "jgp_tribepad_feed.xml")["show"] is False
+    obs = [Observation(s, settings.feed(s), unchanged) for s in states]
+    return pipeline.compute_run(RUN, settings, states, obs, export_obs, prev_export_jobs=prev_export_jobs)
+
+
+def test_totals_cover_every_shown_imported_feed_including_unlisted_ones(settings):
+    out = tribepad_and_new_feed_run(settings)
+    assert row(out, ALL_SCOPE)["jobs"] == 3       # ATS + the unlisted feed; Tribepad isn't imported
+    new = row(out, NEW_FEED)
+    assert (new["configured"], new["imported"], new["show"]) == (False, True, True)
+    tribepad = row(out, TRIBEPAD)
+    assert (tribepad["show"], tribepad["imported"]) == (True, False)
+
+
+def test_tribepad_jobs_missing_from_jobiqo_stay_out_of_the_totals(settings):
+    export = JobiqoExport(ids=frozenset({"a1", "a2", "n1"}), company_by_id={}, jobs=3)
+    export_obs = ExportObservation(FetchResult(200, b"", None, None, RUN, None), export, None)
+    out = tribepad_and_new_feed_run(settings, export_obs, prev_export_jobs=3)
+    assert row(out, TRIBEPAD)["not_reaching"] == 3     # recorded per feed; v_employers calls it not_imported
+    assert sorted(g.job_id for g in out.gaps) == ["t1", "t2", "t3"]
+    all_row = row(out, ALL_SCOPE)
+    assert (all_row["not_reaching"], all_row["live"]) == (0, 3)
 
 
 def test_live_duplicates_and_export_employers(settings):

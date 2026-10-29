@@ -107,10 +107,11 @@ with tab_status:
                            (helpers.STATUS_LABELS[s] for s in ("green", "orange", "red", "error"))
                            if counts.get(label, 0)))
     show_table(incoming)
-    st.caption(f"The feeds Jobiqo imports. Age is the time between when the feed's XML was last rebuilt and "
+    st.caption(f"The feeds on the feed map. Age is the time between when the feed's XML was last rebuilt and "
                f"the check: orange after {settings.default_orange_hours:g} h, red after "
                f"{settings.default_red_hours:g} h (set per feed in config/feeds.yml). Jobiqo imports every ~3 h, "
-               f"but can only pick up changes once the XML has been rebuilt.")
+               f"but can only pick up changes once the XML has been rebuilt. A feed Jobiqo doesn't import "
+               f"(Tribepad) is listed but left out of the Total.")
     st.subheader("Outgoing feed")
     show_table(helpers.outgoing_table(status))
     st.caption("What Jobiqo publishes: every live job on the board, including jobs created directly on the "
@@ -135,7 +136,8 @@ with tab_summary:
                "both (see Duplicates). Added and removed compare each feed's latest version with its previous "
                "one (\"Changes since\"). **Live on Jobiqo:** listings from the feed that are published on "
                f"Jobiqo. **Not reaching Jobiqo:** listings in a feed for {mon.not_reaching_grace_hours:g} h+ "
-               "that aren't past their closing date and aren't live in any form.")
+               "that aren't past their closing date and aren't live in any form. Feeds Jobiqo doesn't import "
+               "(Tribepad) aren't counted here; see **Not imported** on the Employers tab.")
 
 # --------------------------------------------------------------------------- employers
 
@@ -151,11 +153,14 @@ with tab_employers:
     else:
         show_table(table, height=min(38 * (len(table) + 1), 700))
     st.caption("**On Jobiqo:** that employer's listings in that feed which are published on Jobiqo, next to how "
-               "many the feed lists (Jobs this check). **None** means there is nothing to compare yet: the "
-               "feed has only one version so far. **Issues:** an employer no longer showing, jobs removed "
-               "before their closing date, or jobs not reaching Jobiqo. **Expired (expected):** gone within a "
-               "day of their closing date. **Removed (no closing date):** can't be judged either way; Backfill "
-               "V1 carries no closing dates. **Moved:** the same vacancy is still live in another imported feed.")
+               "many the feed lists (Jobs this check). **None** means there is nothing to compare yet (the "
+               "feed has only one version so far), or the column doesn't apply to that feed. **Issues:** an "
+               "employer no longer showing, jobs removed before their closing date, or jobs not reaching Jobiqo. "
+               "**Expired (expected):** gone within a day of their closing date. **Removed (no closing date):** "
+               "can't be judged either way; Backfill V1 carries no closing dates. **Moved:** the same vacancy is "
+               "still live in another imported feed. **Not imported:** jobs in a feed Jobiqo doesn't import "
+               "(Tribepad) that aren't on Jobiqo in any form, e.g. through the Scraping feed. Expected, so not "
+               "an issue.")
 
 # --------------------------------------------------------------------------- duplicates
 

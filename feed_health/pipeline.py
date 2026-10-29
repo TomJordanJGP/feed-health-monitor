@@ -137,7 +137,7 @@ def compute_run(run_ts: datetime, settings: Settings, states: dict[str, SourceSt
 
     in_play = {v.version_id: v for v in [*latest.values(), *(p for p in previous.values() if p)]}
     clusters = Clusters(in_play.values())
-    imported = frozenset(s for s in latest if obs_by_source[s].cfg.imported and obs_by_source[s].cfg.configured)
+    imported = frozenset(s for s in latest if obs_by_source[s].cfg.imported)
     ctx = DiffContext(clusters, {s: v.version_id for s, v in latest.items()}, imported,
                       timedelta(hours=mon.expiry_grace_hours))
 
@@ -157,8 +157,7 @@ def compute_run(run_ts: datetime, settings: Settings, states: dict[str, SourceSt
         gaps_by_source[g.source] = gaps_by_source.get(g.source, 0) + 1
 
     # 6. What's live on Jobiqo per feed and employer, and vacancies listed in two feeds.
-    totals = [s for s in latest if obs_by_source[s].cfg.show and obs_by_source[s].cfg.imported
-              and obs_by_source[s].cfg.configured]
+    totals = [s for s in latest if obs_by_source[s].cfg.show and obs_by_source[s].cfg.imported]
     live = logic.live_listings(latest.values(), export.ids) if export_usable else None
     groups = logic.duplicate_groups([latest[s] for s in totals], clusters,
                                     export.ids if export_usable else None, names)
