@@ -4,7 +4,8 @@
 
 Reads the feed_health views (production by default; FEED_HEALTH_DASHBOARD_DATASET=feed_health_dev
 for the local dataset). Credentials: st.secrets["gcp_service_account"] when hosted, otherwise
-the collector key named in .env.
+the collector key named in .env. Staff only: dashboard/access.py signs viewers in with Google
+and checks the staff group before anything is read.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from google.oauth2.service_account import Credentials
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # project root, for feed_health/dashboard
 
-from dashboard import helpers  # noqa: E402
+from dashboard import access, helpers  # noqa: E402
 from feed_health.config import load_settings  # noqa: E402
 
 LOGO = "https://media.jobsgopublic.com/wp-content/uploads/2025/10/JGP-Logo_RGB.png"
@@ -35,6 +36,7 @@ h1, h2, h3 { font-family: 'DM Sans', sans-serif; font-weight: 700; color: #64379
 </style>
 """, unsafe_allow_html=True)
 st.logo(LOGO, size="large")
+access.require_staff()
 
 settings = load_settings(require_urls=False)
 DATASET = os.environ.get("FEED_HEALTH_DASHBOARD_DATASET", "feed_health")

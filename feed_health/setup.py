@@ -4,8 +4,9 @@
 
 1. With an ADMIN key: create each dataset (EU) if missing and grant the collector service
    account Data Editor on it, and nothing else. The collector key can't create datasets.
-   `--dashboard-reader EMAIL` also grants the hosted dashboard's service account read-only
-   access (Data Viewer) on feed_health, so the app can't change the data.
+   `--dashboard-reader EMAIL` also grants the dashboard's service account read-only access
+   (Data Viewer) on each dataset, so the app can't change the data. The hosted app reads
+   feed_health; local runs use the same key (.streamlit/secrets.toml) and may read dev.
 2. With the COLLECTOR key (from .env): create the tables and (re)create the views. Doing this
    as the collector proves its permissions work before anything is scheduled.
 """
@@ -42,7 +43,7 @@ def main() -> None:
     parser.add_argument("--admin-key", required=True, help="service-account key with BigQuery Admin")
     parser.add_argument("--datasets", nargs="+", default=["feed_health", "feed_health_dev"])
     parser.add_argument("--dashboard-reader", metavar="EMAIL",
-                        help="the hosted dashboard's service account: read-only access on feed_health")
+                        help="the dashboard's service account: read-only access on each dataset")
     args = parser.parse_args()
 
     settings = load_settings(require_urls=False)
@@ -56,7 +57,7 @@ def main() -> None:
         ds.description = DESCRIPTIONS.get(name, "Feed Health Monitor")
         ds = admin.create_dataset(ds, exists_ok=True)
         grant(admin, ds, "WRITER", collector_email)
-        if args.dashboard_reader and name == "feed_health":
+        if args.dashboard_reader:  # the hosted app reads feed_health; local runs, with the same key, dev too
             grant(admin, ds, "READER", args.dashboard_reader)
 
         collector = store.client_for(replace(settings, bq_dataset=name))

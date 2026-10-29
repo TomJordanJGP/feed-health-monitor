@@ -1,6 +1,8 @@
 # Dashboard: Streamlit reads the feed_health views. Listed in full (no -r) so a host like
 # Streamlit Community Cloud can install from this file on its own.
 streamlit==1.57.0
+Authlib==1.9.1        # Google sign-in (st.login)
+httpx==0.28.1         # ...which Authlib's Starlette client needs (not in streamlit[auth])
 pandas==2.3.3
 pyarrow==24.0.0
 db-dtypes==1.6.0

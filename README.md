@@ -42,12 +42,18 @@ successful sync. The run log is public, so it prints counts only.
 
 1. Give the app its own read-only service account: BigQuery Job User on the project, then
    `venv/bin/python -m feed_health.setup --admin-key <admin key> --dashboard-reader <its email>`
-   for read access to `feed_health` only.
+   for read access to the datasets only.
 2. New app: this repo, branch `main`, main file `dashboard/app.py`, Python 3.13. Streamlit installs
    `dashboard/requirements.txt`.
 3. In the app's Secrets, put that account's key under `[gcp_service_account]`, one `key = "value"` line per field
    of the JSON key file. The dashboard uses it in place of the local key file.
-4. Choose who can view the app under Settings → Sharing.
+4. Staff only: `dashboard/access.py` signs viewers in with Google and lets in members of a Google Group.
+   Add the service account to the group as a plain member (it reads the group's members), and add to
+   the Secrets an `[auth]` table (the Google OAuth web client: `redirect_uri` = the app's address +
+   `/oauth2callback`, `cookie_secret`, `client_id`, `client_secret`, `server_metadata_url =
+   "https://accounts.google.com/.well-known/openid-configuration"`) and `[access]` with
+   `group = "<group email>"`. Without them the app refuses everyone. Locally the same tables go in the
+   gitignored `.streamlit/secrets.toml`, with `redirect_uri = "http://localhost:8503/oauth2callback"`.
 
 ## Adding or removing a feed
 
