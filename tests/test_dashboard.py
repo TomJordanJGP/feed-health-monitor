@@ -38,6 +38,11 @@ class TestTimes:
         now = datetime(2026, 9, 29, 12, tzinfo=UTC)
         assert helpers.monitor_state(now - timedelta(hours=hours_ago), now, 2, 4) == state
 
+    @pytest.mark.parametrize("orange, red, label", [(26.0, 32.0, "26 h / 32 h"), (2.5, 5, "2.5 h / 5 h"),
+                                                   (None, None, "—"), (float("nan"), 5, "—")])
+    def test_thresholds_label(self, orange, red, label):
+        assert helpers.thresholds_label(orange, red) == label
+
     def test_no_run_at_all_is_red(self):
         assert helpers.monitor_state(None, ts(2026, 9, 29, 12), 2, 4) == "red"
 
@@ -45,17 +50,17 @@ class TestTimes:
 def status_frame():
     rows = [
         dict(scope="civil_service_jobs_uk.xml", label="JGP scrape | Civil Service Jobs UK", show=True, imported=True, configured=True,
-             status="green", build_ts=ts(2026, 9, 29, 11, 48), age_hours=1.5, jobs=1307, employers=105, error=None, note=None, export_status=None),
+             status="green", build_ts=ts(2026, 9, 29, 11, 48), age_hours=1.5, orange_hours=26.0, red_hours=32.0, jobs=1307, employers=105, error=None, note=None, export_status=None),
         dict(scope="jgp_scraping_feed.xml", label="JGP scrape", show=True, imported=True, configured=True,
-             status="red", build_ts=ts(2026, 9, 28, 18, 2), age_hours=17.5, jobs=818, employers=45, error=None, note=None, export_status=None),
+             status="red", build_ts=ts(2026, 9, 28, 18, 2), age_hours=17.5, orange_hours=3.0, red_hours=5.0, jobs=818, employers=45, error=None, note=None, export_status=None),
         dict(scope="jgp_tribepad_feed.xml", label="JGP Tribepad", show=True, imported=False, configured=True,
-             status="green", build_ts=ts(2026, 9, 29, 11, 48), age_hours=1.5, jobs=388, employers=14, error=None, note=None, export_status=None),
+             status="green", build_ts=ts(2026, 9, 29, 11, 48), age_hours=1.5, orange_hours=26.0, red_hours=32.0, jobs=388, employers=14, error=None, note=None, export_status=None),
         dict(scope="new_feed.xml", label="new_feed.xml", show=True, imported=True, configured=False,
-             status="error", build_ts=pd.NaT, age_hours=None, jobs=None, employers=None, error="HTTP 404", note=None, export_status=None),
+             status="error", build_ts=pd.NaT, age_hours=None, orange_hours=26.0, red_hours=32.0, jobs=None, employers=None, error="HTTP 404", note=None, export_status=None),
         dict(scope="jobiqo_export", label="Jobiqo export (Appcast)", show=None, imported=None, configured=None,
-             status="green", build_ts=ts(2026, 9, 29, 13, 2), age_hours=0.2, jobs=7915, employers=446, error=None, note=None, export_status="ok"),
+             status="green", build_ts=ts(2026, 9, 29, 13, 2), age_hours=0.2, orange_hours=6.0, red_hours=12.0, jobs=7915, employers=446, error=None, note=None, export_status="ok"),
         dict(scope="ALL", label="All feeds", show=None, imported=None, configured=None, status=None, build_ts=pd.NaT,
-             age_hours=None, jobs=8624, employers=445, error=None, note=None, export_status="ok"),
+             age_hours=None, orange_hours=None, red_hours=None, jobs=8624, employers=445, error=None, note=None, export_status="ok"),
     ]
     return pd.DataFrame(rows)
 
@@ -68,6 +73,8 @@ def test_incoming_table_with_total_row():
     assert new["Status"] == "⚠️ Error" and "HTTP 404" in new["Notes"] and "not in config" in new["Notes"]
     assert "not imported" not in new["Notes"]
     assert table.iloc[1]["Status"] == "🔴 Stale" and table.iloc[1]["Last built"] == "Mon 28 Sep, 19:02"
+    assert table.iloc[1]["Orange / red after"] == "3 h / 5 h" and table.iloc[2]["Orange / red after"] == "26 h / 32 h"
+    assert table.iloc[-1]["Orange / red after"] == ""      # the Total row has no thresholds
     tribepad = table.iloc[3]
     assert (tribepad["Jobs"], tribepad["Notes"]) == ("388", "not imported by Jobiqo")
     total = table.iloc[-1]
@@ -85,6 +92,7 @@ def test_outgoing_table_counts_export_employers():
     table = helpers.outgoing_table(status_frame())
     assert list(table["Feed"]) == ["Jobiqo export (what's live on the board)", "Total"]
     assert (table.iloc[0]["Employers"], table.iloc[1]["Jobs"]) == ("446", "7,915")
+    assert table.iloc[0]["Orange / red after"] == "6 h / 12 h"
     pa.Table.from_pandas(table)
 
 

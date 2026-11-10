@@ -111,10 +111,12 @@ with tab_status:
                            if counts.get(label, 0)))
     show_table(incoming)
     st.caption(f"The feeds on the feed map. Age is the time between when the feed's XML was last rebuilt and "
-               f"the check: orange after {settings.default_orange_hours:g} h, red after "
-               f"{settings.default_red_hours:g} h (set per feed in config/feeds.yml). Jobiqo imports every ~3 h, "
-               f"but can only pick up changes once the XML has been rebuilt. A feed Jobiqo doesn't import "
-               f"(Tribepad) is listed but left out of the Total.")
+               f"the check. The colour follows each feed's rebuild schedule (Orange / red after; set per feed in "
+               f"config/feeds.yml): most feeds are rebuilt once a day in the morning, so they turn orange after "
+               f"{settings.default_orange_hours:g} h (today's build is late) and red after "
+               f"{settings.default_red_hours:g} h (the day's build was missed); feeds rebuilt every 2 h turn "
+               f"orange after one missed build. Jobiqo imports every ~3 h, but can only pick up changes once the "
+               f"XML has been rebuilt. A feed Jobiqo doesn't import (Tribepad) is listed but left out of the Total.")
     st.subheader("Outgoing feed")
     show_table(helpers.outgoing_table(status))
     st.caption("What Jobiqo publishes: every live job on the board, including jobs created directly on the "

@@ -12,9 +12,13 @@
 # Every feed on the map is checked. One that isn't listed here is treated as collected, shown
 # and imported, under its file name, with a "not in config/feeds.yml" note until it's added.
 
+# Thresholds follow each feed's rebuild schedule (Tom, 2026-11-10). Most feeds are rebuilt once a day
+# in the morning (seen 05:46-13:02 UK), so the default is the daily rule: orange when today's build is
+# ~2 h later than yesterday's, red when the day's build has in effect been missed. Feeds rebuilt every
+# 2 h override it: orange after one missed build, red after two.
 defaults:
-  orange_hours: 5        # feed status turns orange when the XML is older than this at the check
-  red_hours: 10          # ...and red beyond this. Per-feed overrides go on the feed entry.
+  orange_hours: 26       # feed status turns orange when the XML is older than this at the check
+  red_hours: 32          # ...and red beyond this. Per-feed overrides go on the feed entry.
 
 monitor:
   expiry_grace_hours: 24         # a job gone within this long of its close date counts as expired
@@ -55,11 +59,22 @@ feeds:
     collect: true
     show: true
     imported: true
+    orange_hours: 3      # rebuilt every 2 h
+    red_hours: 5
   jgp_falkland_islands_government_feed.xml:
     label: "JGP | Falkland Island"
     collect: true
     show: true
     imported: true
+    orange_hours: 3      # rebuilt every 2 h
+    red_hours: 5
+  jgp_ats_organic_feed.xml:
+    label: "JGP ATS organic feed"
+    collect: true
+    show: true
+    imported: true
+    orange_hours: 3      # rebuilt every 2 h
+    red_hours: 5
   jgp_myjobscotland_feed.xml:
     label: "JGP | Myjobscotland"
     collect: true

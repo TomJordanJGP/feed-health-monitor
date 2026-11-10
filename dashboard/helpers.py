@@ -34,6 +34,13 @@ def age_label(hours) -> str:
     return f"{hours / 24:.1f} days"
 
 
+def thresholds_label(orange_hours, red_hours) -> str:
+    """'26 h / 32 h': when a row turns orange and red. A dash for a row without thresholds."""
+    if any(v is None or pd.isna(v) for v in (orange_hours, red_hours)):
+        return DASH
+    return f"{orange_hours:g} h / {red_hours:g} h"
+
+
 def status_label(status) -> str:
     return STATUS_LABELS.get(status, DASH) if isinstance(status, str) else DASH
 
@@ -95,6 +102,7 @@ def _status_rows(rows: pd.DataFrame) -> pd.DataFrame:
         "Status": rows["status"].map(status_label),
         "Last built": rows["build_ts"].map(uk_time),
         "Age": rows["age_hours"].map(age_label),
+        "Orange / red after": [thresholds_label(o, r) for o, r in zip(rows["orange_hours"], rows["red_hours"])],
         "Jobs": _count_text(rows["jobs"]),
         "Employers": _count_text(rows["employers"]),
         "Notes": rows.apply(note, axis=1) if len(rows) else pd.Series(dtype="object"),

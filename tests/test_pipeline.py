@@ -20,6 +20,31 @@ def settings():
     return load_settings(require_urls=False)
 
 
+@pytest.mark.parametrize("feed, thresholds", [
+    ("jgp_ats_feed.xml", (3.0, 5.0)),                          # rebuilt every 2 h
+    ("jgp_ats_organic_feed.xml", (3.0, 5.0)),
+    ("jgp_falkland_islands_government_feed.xml", (3.0, 5.0)),
+    ("civil_service_jobs_uk.xml", (26.0, 32.0)),               # rebuilt once a day, in the morning
+    ("jgp_scraping_feed.xml", (26.0, 32.0)),
+    ("not_on_the_config.xml", (26.0, 32.0)),                   # an unlisted feed gets the daily default
+])
+def test_staleness_thresholds_follow_the_rebuild_schedule(settings, feed, thresholds):
+    cfg = settings.feed(feed)
+    assert (cfg.orange_hours, cfg.red_hours) == thresholds
+
+
+def test_feed_checks_record_their_feeds_thresholds(settings):
+    """The status view colours each row with the thresholds stored at its check."""
+    out = pipeline.compute_run(RUN, settings, {}, [
+        Observation(ATS, settings.feed(ATS), ok(), parse_feed(feed_xml(jgp_job("a1")), RUN)),
+        Observation("civil_service_jobs_uk.xml", settings.feed("civil_service_jobs_uk.xml"), ok(),
+                    parse_feed(feed_xml(jgp_job("c1")), RUN)),
+    ], None)
+    assert (row(out, ATS)["orange_hours"], row(out, ATS)["red_hours"]) == (3.0, 5.0)
+    cs = row(out, "civil_service_jobs_uk.xml")
+    assert (cs["orange_hours"], cs["red_hours"]) == (26.0, 32.0)
+
+
 def ok(generation="g2", built=datetime(2026, 9, 29, 11, 0, tzinfo=UTC)):
     return FetchResult(200, b"", '"etag-2"', generation, built, None)
 
