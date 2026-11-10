@@ -14,6 +14,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 from google.cloud import bigquery
@@ -71,6 +72,7 @@ st.caption("Is each feed being rebuilt, and are any employers' jobs disappearing
 with st.spinner("Loading the latest checks…"):
     status, summary, employers = view("v_feed_status"), view("v_summary"), view("v_employers")
     duplicates, companies = view("v_duplicates"), view("v_companies")
+    new_vacancies = view("v_new_vacancies")
 
 if status.empty:
     st.info(f"No checks recorded in `{DATASET}` yet. The collector runs hourly at :47.")
@@ -92,8 +94,8 @@ if monitor != "green":
         f"The monitor hasn't recorded a check for {helpers.age_label(minutes / 60)}. The figures below may be "
         "out of date: check the collector's GitHub Action (TomJordanJGP/feed-health-monitor).")
 
-tab_status, tab_summary, tab_employers, tab_dups, tab_companies = st.tabs(
-    ["Feed status", "Summary", "Employers", "Duplicates", "Companies"])
+tab_status, tab_summary, tab_new, tab_employers, tab_dups, tab_companies = st.tabs(
+    ["Feed status", "Summary", "New vacancies", "Employers", "Duplicates", "Companies"])
 
 
 def number(value) -> str:
@@ -143,6 +145,33 @@ with tab_summary:
                f"Jobiqo. **Not reaching Jobiqo:** listings in a feed for {mon.not_reaching_grace_hours:g} h+ "
                "that aren't past their closing date and aren't live in any form. Feeds Jobiqo doesn't import "
                "(Tribepad) aren't counted here; see **Not imported** on the Employers tab.")
+
+# --------------------------------------------------------------------------- new vacancies
+
+with tab_new:
+    st.subheader("New vacancies per day")
+    if new_vacancies.empty:
+        st.info("No new vacancies recorded yet.")
+    else:
+        groups = helpers.new_vacancy_groups(new_vacancies)
+        chart = alt.Chart(helpers.new_vacancies_chart_data(new_vacancies)).mark_bar().encode(
+            x=alt.X("yearmonthdate(day):T", title=None, axis=alt.Axis(format="%d %b", labelAngle=0)),
+            y=alt.Y("sum(new_vacancies):Q", title="New vacancies"),
+            color=alt.Color("feed:N", sort=groups, scale=alt.Scale(domain=groups),
+                            legend=alt.Legend(title=None, orient="bottom", columns=3, labelLimit=320)),
+            order=alt.Order("stack:Q"),
+            tooltip=[alt.Tooltip("yearmonthdate(day):T", title="Day", format="%a %d %b"),
+                     alt.Tooltip("feed:N", title="Feed"),
+                     alt.Tooltip("new_vacancies:Q", title="New vacancies", format=",")],
+        ).properties(height=380)
+        st.altair_chart(chart, width="stretch")
+        table = helpers.new_vacancies_table(new_vacancies)
+        show_table(table, height=min(38 * (len(table) + 1), 700))
+    st.caption("Vacancies first published on Jobiqo each day (UK time), by the feed they came from. Each vacancy "
+               "counts once: a job that moves to another feed, or drops out and comes back, isn't new again, and "
+               "copies of one vacancy in two feeds (see Duplicates) count once, for the copy published first. "
+               "**Made on Jobiqo:** created on the site, not from a feed. Today's figures are so far. History "
+               "starts on 30 Sep, the first full day of feed checks.")
 
 # --------------------------------------------------------------------------- employers
 

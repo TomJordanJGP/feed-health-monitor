@@ -18,6 +18,7 @@ import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
@@ -276,6 +277,28 @@ class ExportOrg:
     site_jobs: int                 # of which created on Jobiqo directly (no external_id)
 
 
+# Jobiqo writes the export's times (<date>, <lastBuildDate>) in Central European time, without
+# saying so: 1 h ahead of UK time in winter, 2 h in summer (checked against poll times, 2026-11-10).
+JOBIQO_TZ = ZoneInfo("Europe/Vienna")
+
+
+def jobiqo_time(raw: str | None) -> datetime | None:
+    """'2026-10-02 13:42:01' in Jobiqo's local time -> UTC; None if missing or unreadable."""
+    try:
+        local = datetime.strptime((raw or "").strip(), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return local.replace(tzinfo=JOBIQO_TZ).astimezone(timezone.utc)
+
+
+@dataclass(frozen=True)
+class Listing:
+    """One job published on Jobiqo, as its export lists it."""
+    entity_id: str                 # Jobiqo's own id for the listing (<id>); unique, never reused
+    external_id: str               # the source feed's <id>; "" for a job created on Jobiqo itself
+    published_ts: datetime | None  # <date>, in UTC
+
+
 @dataclass(frozen=True)
 class JobiqoExport:
     ids: frozenset[str]            # external_ids live on Jobiqo (= source feed <id>s)
@@ -284,6 +307,7 @@ class JobiqoExport:
     organizations: int = 0         # distinct Jobiqo organization_id (company name if an id is missing)
     orgs: dict[str, ExportOrg] = field(default_factory=dict)     # by org_id
     org_by_id: dict[str, str] = field(default_factory=dict)      # external_id -> org_id
+    listings: tuple[Listing, ...] = ()                           # every job with an <id>
 
 
 def parse_jobiqo_export(data: bytes) -> JobiqoExport:
@@ -293,6 +317,7 @@ def parse_jobiqo_export(data: bytes) -> JobiqoExport:
     org_jobs: dict[str, int] = {}
     org_site_jobs: dict[str, int] = {}
     org_by_id: dict[str, str] = {}
+    listings: list[Listing] = []
     count = 0
     root = None
     depth = 0
@@ -316,6 +341,9 @@ def parse_jobiqo_export(data: bytes) -> JobiqoExport:
                     org_jobs[org] = org_jobs.get(org, 0) + 1
                     if not ext:
                         org_site_jobs[org] = org_site_jobs.get(org, 0) + 1
+                entity = (elem.findtext("id") or "").strip()
+                if entity:
+                    listings.append(Listing(entity, ext, jobiqo_time(elem.findtext("date"))))
                 if ext:  # site-created jobs have no external_id
                     ids.add(ext)
                     company[ext] = name
@@ -328,7 +356,7 @@ def parse_jobiqo_export(data: bytes) -> JobiqoExport:
         raise FeedParseError("empty document")
     orgs = {o: ExportOrg(o, org_company[o], org_jobs[o], org_site_jobs.get(o, 0)) for o in org_jobs}
     return JobiqoExport(ids=frozenset(ids), company_by_id=company, jobs=count, organizations=len(orgs),
-                        orgs=orgs, org_by_id=org_by_id)
+                        orgs=orgs, org_by_id=org_by_id, listings=tuple(listings))
 
 
 @dataclass(frozen=True)

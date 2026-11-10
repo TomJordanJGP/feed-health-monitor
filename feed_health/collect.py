@@ -31,7 +31,7 @@ def run(settings: Settings, dry_run: bool = False, force_hubspot: bool = False) 
     started = time.monotonic()
     run_ts = datetime.now(timezone.utc).replace(microsecond=0)
     client = store.client_for(settings)
-    states, prev_export_jobs, last_hubspot = store.read_state(client, settings)
+    states, prev_export_jobs, last_hubspot, known_listings = store.read_state(client, settings)
     session = requests.Session()
 
     # Feed map -> which feeds exist. A configured feed missing from the map (or a map that
@@ -77,7 +77,7 @@ def run(settings: Settings, dry_run: bool = False, force_hubspot: bool = False) 
 
     out = pipeline.compute_run(run_ts, settings, states, observations,
                                ExportObservation(export_fetch, export, export_error),
-                               map_fetch, map_error, prev_export_jobs)
+                               map_fetch, map_error, prev_export_jobs, known_listings)
     hubspot_row, out.companies = sync_hubspot(client, settings, out, run_ts, last_hubspot, session, force_hubspot)
     out.checks.append(hubspot_row)
     all_row = next(r for r in out.checks if r["scope"] == ALL_SCOPE)
@@ -122,7 +122,8 @@ def report(out: RunOutput, settings: Settings, dry_run: bool, seconds: float) ->
                      f"{state}{'  [' + r['note'] + ']' if r['note'] else ''}")
     export_row = next(r for r in out.checks if r["scope"] == pipeline.EXPORT_SCOPE)
     total = next(r for r in out.checks if r["scope"] == ALL_SCOPE)
-    lines.append(f"  jobiqo export: {export_row['export_status']} ({export_row['jobs'] or 0} jobs)")
+    lines.append(f"  jobiqo export: {export_row['export_status']} ({export_row['jobs'] or 0} jobs, "
+                 f"{len(out.listings)} listings not seen before)")
     lines.append(f"  all feeds: {total['jobs']} vacancies, {total['employers']} employers, "
                  f"not reaching Jobiqo: {total['not_reaching']}, errors: {total['errors']}")
     # HubSpot company names are internal and this log is public: counts only.

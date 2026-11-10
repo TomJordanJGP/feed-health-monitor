@@ -1,6 +1,7 @@
 # Dashboard: Streamlit reads the feed_health views. Listed in full (no -r) so a host like
 # Streamlit Community Cloud can install from this file on its own.
 streamlit==1.57.0
+altair==6.3.0         # charts: a Streamlit dependency, pinned because the app imports it
 Authlib==1.9.1        # Google sign-in (st.login)
 httpx==0.28.1         # ...which Authlib's Starlette client needs (not in streamlit[auth])
 pandas==2.3.3

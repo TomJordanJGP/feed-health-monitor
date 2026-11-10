@@ -4,7 +4,7 @@ import pytest
 
 from feed_health import pipeline
 from feed_health.config import load_settings
-from feed_health.feeds import ExportOrg, FetchResult, JobiqoExport, parse_feed
+from feed_health.feeds import ExportOrg, FetchResult, JobiqoExport, Listing, parse_feed
 from feed_health.pipeline import (ALL_SCOPE, EXPORT_SCOPE, HUBSPOT_SCOPE, ExportObservation, LastCheck, Observation,
                                   SourceState)
 from tests.conftest import feed_xml, jgp_job
@@ -212,3 +212,21 @@ def test_hubspot_row_keeps_the_last_good_sync_while_later_ones_fail():
     quiet = pipeline.hubspot_row(RUN + timedelta(hours=4), failed)     # a run that didn't try
     assert (quiet["error"], quiet["note"], quiet["age_hours"]) == (failed["error"], None, 4.0)
     assert pipeline.hubspot_row(RUN, None)["build_ts"] is None          # never synced: no age, no colour
+
+
+def test_new_listings_are_stored_once():
+    published = datetime(2026, 11, 10, 7, 30, tzinfo=UTC)
+    export = JobiqoExport(ids=frozenset({"a1"}), company_by_id={}, jobs=3, listings=(
+        Listing("101", "a1", published), Listing("102", "", None), Listing("103", "a3", published),
+        Listing("103", "a3", published)))                     # the same listing twice in one export
+    rows = pipeline.new_listings(export, frozenset({"101"}), RUN)
+    assert rows == [{"entity_id": "102", "external_id": None, "published_ts": None, "first_seen_ts": RUN},
+                    {"entity_id": "103", "external_id": "a3", "published_ts": published, "first_seen_ts": RUN}]
+    assert pipeline.new_listings(None, frozenset(), RUN) == []
+
+
+def test_compute_run_passes_new_listings_through(settings):
+    export = JobiqoExport(ids=frozenset(), company_by_id={}, jobs=1, listings=(Listing("7", "x", None),))
+    out = pipeline.compute_run(RUN, settings, {}, [], ExportObservation(ok(), export, None),
+                               known_listings=frozenset())
+    assert [r["entity_id"] for r in out.listings] == ["7"]

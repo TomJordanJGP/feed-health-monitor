@@ -12,6 +12,7 @@ left under its (deterministic) id by an interrupted run are deleted, so a rerun 
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 
@@ -73,6 +74,11 @@ SCHEMAS: dict[str, list[bigquery.SchemaField]] = {
     "export_orgs": _schema(
         ("check_ts", "ts", "REQUIRED"), ("export_org_id", "str", "REQUIRED"), ("company", "str"), ("jobs", "int"),
         ("site_jobs", "int"), ("org_key", "str"), ("link_share", "float")),
+    # Every Jobiqo listing, stored once, the first time the export shows it (history before
+    # 2026-11-10 copied from JPD's Appcast table by feed_health.backfill_listings).
+    "export_listings": _schema(
+        ("entity_id", "str", "REQUIRED"), ("external_id", "str"), ("published_ts", "ts"),
+        ("first_seen_ts", "ts", "REQUIRED")),
     # HubSpot companies and how they match the feed employers: replaced whole on each daily sync.
     "companies": _schema(
         ("synced_ts", "ts", "REQUIRED"), ("hubspot_id", "str", "REQUIRED"), ("name", "str"), ("jobiqo_id", "str"),
@@ -83,7 +89,7 @@ SCHEMAS: dict[str, list[bigquery.SchemaField]] = {
 PARTITION_FIELD = {"version_jobs": "build_ts", "jobiqo_gaps": "check_ts", "employer_live": "check_ts",
                    "duplicates": "check_ts", "export_orgs": "check_ts"}
 CLUSTER_FIELDS = {"version_jobs": ["source", "org_key"], "jobiqo_gaps": ["source"], "employer_live": ["source"],
-                  "duplicates": ["source"]}
+                  "duplicates": ["source"], "export_listings": ["entity_id"]}
 
 
 def client_for(settings: Settings) -> bigquery.Client:
@@ -129,6 +135,55 @@ def ensure_schema(client: bigquery.Client, settings: Settings) -> list[str]:
     return done
 
 
+def new_vacancies_select(t: Callable[[str], str]) -> str:
+    """The v_new_vacancies query, over the tables `t` names (the BigQuery test points it at temp tables)."""
+    return f"""
+-- New vacancies per day (UK time) and feed. Each vacancy counts once: on the day Jobiqo first
+-- published it, under the feed it came from. A vacancy is one Jobiqo listing, except that
+--   * listings that share a feed id (Jobiqo re-created the listing) are one vacancy, and
+--   * copies of one vacancy in two feeds under different ids (the duplicates table: same URL or
+--     same reference) are one vacancy, credited to the copy published first.
+-- A listing's feed is the imported feed its id appeared in first; listings without a feed id
+-- were made on Jobiqo. Days start the day after the monitor's first check, when feed history begins.
+WITH feeds AS (
+  SELECT scope AS source, label FROM `{t('checks')}`
+  WHERE check_ts = (SELECT MAX(check_ts) FROM `{t('checks')}`) AND ENDS_WITH(scope, '.xml') AND imported
+),
+feed_of AS (
+  SELECT v.job_id, ARRAY_AGG(v.source ORDER BY v.first_seen_ts, v.source LIMIT 1)[OFFSET(0)] AS source
+  FROM `{t('version_jobs')}` v JOIN feeds f USING (source)
+  GROUP BY v.job_id
+),
+twin AS (
+  SELECT job_id, MIN(first_id) AS vacancy_key
+  FROM (SELECT job_id, MIN(job_id) OVER (PARTITION BY check_ts, group_id) AS first_id FROM `{t('duplicates')}`)
+  GROUP BY job_id
+),
+listings AS (
+  SELECT entity_id, ANY_VALUE(external_id) AS external_id,
+         -- <date> is when Jobiqo published it; first sight in the export bounds it (a rare <date> moves later)
+         LEAST(MIN(first_seen_ts), COALESCE(MIN(published_ts), MIN(first_seen_ts))) AS published_ts
+  FROM `{t('export_listings')}`
+  GROUP BY entity_id
+),
+vacancies AS (
+  SELECT ARRAY_AGG(STRUCT(l.published_ts, l.external_id) ORDER BY l.published_ts, l.entity_id LIMIT 1)[OFFSET(0)] AS first
+  FROM listings l LEFT JOIN twin t ON t.job_id = l.external_id
+  GROUP BY COALESCE(t.vacancy_key, l.external_id, CONCAT('jobiqo:', l.entity_id))
+)
+SELECT
+  DATE(v.first.published_ts, 'Europe/London') AS day,
+  CASE WHEN v.first.external_id IS NULL THEN 'Made on Jobiqo'
+       ELSE COALESCE(f.label, 'Not in a monitored feed') END AS feed,
+  COUNT(*) AS new_vacancies
+FROM vacancies v
+LEFT JOIN feed_of fo ON fo.job_id = v.first.external_id
+LEFT JOIN feeds f ON f.source = fo.source
+WHERE DATE(v.first.published_ts, 'Europe/London') >
+      (SELECT DATE(MIN(build_ts), 'Europe/London') FROM `{t('feed_versions')}`)
+GROUP BY day, feed"""
+
+
 def view_sql(settings: Settings) -> dict[str, str]:
     t = settings.table
     return {
@@ -151,6 +206,8 @@ SELECT
   export_status, errors, cluster_conflicts, run_seconds
 FROM `{t('checks')}`
 WHERE check_ts = (SELECT MAX(check_ts) FROM `{t('checks')}`)""",
+
+        "v_new_vacancies": f"CREATE OR REPLACE VIEW `{t('v_new_vacancies')}` AS\n{new_vacancies_select(t)}",
 
         "v_summary": f"""
 CREATE OR REPLACE VIEW `{t('v_summary')}` AS
@@ -305,11 +362,15 @@ LEFT JOIN history h USING (hubspot_id)""",
 
 # --------------------------------------------------------------------------- reads
 
-def read_state(client: bigquery.Client, settings: Settings) -> tuple[dict[str, SourceState], int | None, dict | None]:
+def read_state(client: bigquery.Client, settings: Settings
+               ) -> tuple[dict[str, SourceState], int | None, dict | None, frozenset[str]]:
     """Everything the next run needs: each source's latest two committed versions (with jobs)
-    and its last check row; the previous Jobiqo export job count; the last HubSpot status row."""
+    and its last check row; the previous Jobiqo export job count; the last HubSpot status row;
+    the Jobiqo listings already stored."""
     t = settings.table
-    with ThreadPoolExecutor(max_workers=2) as pool:  # independent reads: run them side by side
+    with ThreadPoolExecutor(max_workers=3) as pool:  # independent reads: run them side by side
+        listings_future = pool.submit(lambda: frozenset(
+            r["entity_id"] for r in client.query_and_wait(f"SELECT entity_id FROM `{t('export_listings')}`")))
         versions_future = pool.submit(lambda: list(client.query_and_wait(f"""
             SELECT * FROM `{t('feed_versions')}` WHERE TRUE
             QUALIFY ROW_NUMBER() OVER (PARTITION BY source ORDER BY build_ts DESC, first_seen_ts DESC) <= 2
@@ -346,7 +407,8 @@ def read_state(client: bigquery.Client, settings: Settings) -> tuple[dict[str, S
                                      previous=previous, last_check=_last_check(last_checks.get(source)))
     export = last_checks.get("jobiqo_export")
     hubspot = last_checks.get(HUBSPOT_SCOPE)
-    return states, (export["jobs"] if export else None), (dict(hubspot.items()) if hubspot else None)
+    return (states, (export["jobs"] if export else None), (dict(hubspot.items()) if hubspot else None),
+            listings_future.result())
 
 
 def read_employers(client: bigquery.Client, settings: Settings) -> dict[str, Employer]:
@@ -463,6 +525,7 @@ def write_run(client: bigquery.Client, settings: Settings, out: RunOutput,
         "employer_live": out.employer_live,
         "duplicates": out.duplicates,
         "export_orgs": out.export_orgs,
+        "export_listings": out.listings,
     }
     _wait(*[_load(client, settings, name, rows) for name, rows in per_run.items() if rows])
     if out.companies:

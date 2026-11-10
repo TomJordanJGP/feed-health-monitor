@@ -155,6 +155,50 @@ def summary_totals(summary: pd.DataFrame) -> dict:
     return totals
 
 
+# --------------------------------------------------------------------------- new vacancies
+
+NOT_FROM_A_FEED = ("Made on Jobiqo", "Not in a monitored feed")
+
+
+def _new_vacancies_days(rows: pd.DataFrame) -> pd.DataFrame:
+    rows = rows.copy()
+    rows["day"] = pd.to_datetime(rows["day"].astype(str)).dt.normalize()
+    rows["new_vacancies"] = pd.to_numeric(rows["new_vacancies"]).astype(int)
+    return rows
+
+
+def new_vacancy_groups(rows: pd.DataFrame) -> list[str]:
+    """Column and stack order: feeds with the most new vacancies first, then the non-feed groups."""
+    totals = rows.groupby("feed")["new_vacancies"].sum()
+    feeds = sorted((f for f in totals.index if f not in NOT_FROM_A_FEED), key=lambda f: (-totals[f], f))
+    return feeds + [f for f in NOT_FROM_A_FEED if f in totals.index]
+
+
+def new_vacancies_chart_data(rows: pd.DataFrame) -> pd.DataFrame:
+    """v_new_vacancies rows with the day as a date and each group's stack position."""
+    rows = _new_vacancies_days(rows)
+    position = {g: i for i, g in enumerate(new_vacancy_groups(rows))}
+    return rows.assign(stack=rows["feed"].map(position))
+
+
+def new_vacancies_table(rows: pd.DataFrame) -> pd.DataFrame:
+    """One row per day, newest first, every day from the first to the last (0 when nothing was
+    published); a column per feed and a Total. Counts stay numeric so the table sorts."""
+    if rows.empty:
+        return pd.DataFrame(columns=["Day", "Total"])
+    rows = _new_vacancies_days(rows)
+    groups = new_vacancy_groups(rows)
+    days = pd.date_range(rows["day"].min(), rows["day"].max(), freq="D")
+    wide = (rows.pivot_table(index="day", columns="feed", values="new_vacancies", aggfunc="sum", fill_value=0)
+            .reindex(index=days, columns=groups, fill_value=0).astype(int))
+    wide["Total"] = wide.sum(axis=1)
+    wide = wide.iloc[::-1]
+    table = wide.reset_index(drop=True)
+    table.insert(0, "Day", [d.strftime("%a %d %b") for d in wide.index])
+    table.columns.name = None
+    return table
+
+
 # --------------------------------------------------------------------------- employers
 
 def issue_mask(rows: pd.DataFrame) -> pd.Series:

@@ -146,6 +146,21 @@ def test_jobiqo_export_ids_and_companies():
     assert export.orgs == {"31727": ExportOrg("31727", "Surrey County Council", jobs=2, site_jobs=1),
                            "No Id Org": ExportOrg("No Id Org", "No Id Org", jobs=1, site_jobs=0)}
     assert export.org_by_id == {"a1": "31727", "b2": "No Id Org"}   # feed job ids -> the export's numbering
+    assert [(x.entity_id, x.external_id) for x in export.listings] == [("1", "a1"), ("2", ""), ("3", "b2")]
+
+
+def test_jobiqo_export_listings_published_time_is_central_european():
+    data = (b"<jobs>"
+            b"<job><id>7</id><external_id>a1</external_id><date>2026-11-10 16:02:27</date></job>"     # CET, UTC+1
+            b"<job><id>8</id><external_id>a2</external_id><date>2026-10-02 13:42:01</date></job>"     # CEST, UTC+2
+            b"<job><id>9</id><external_id>a3</external_id><date>not a date</date></job>"
+            b"<job><id></id><external_id>a4</external_id><date>2026-10-02 13:42:01</date></job>"       # no id: no listing
+            b"</jobs>")
+    listings = feeds.parse_jobiqo_export(data).listings
+    assert [x.entity_id for x in listings] == ["7", "8", "9"]
+    assert listings[0].published_ts == datetime(2026, 11, 10, 15, 2, 27, tzinfo=timezone.utc)
+    assert listings[1].published_ts == datetime(2026, 10, 2, 11, 42, 1, tzinfo=timezone.utc)
+    assert listings[2].published_ts is None
 
 
 def test_feed_map():

@@ -83,6 +83,7 @@ class RunOutput:
     duplicates: list[dict]         # one row per copy of a vacancy listed in 2+ shown, imported feeds
     export_orgs: list[dict]        # the export's employers, linked to feed employers (usable export only)
     companies: list[dict] = field(default_factory=list)   # HubSpot companies, set by collect on a sync run
+    listings: list[dict] = field(default_factory=list)    # Jobiqo listings seen for the first time this run
 
 
 def build_time(fetch: FetchResult, parsed: ParsedFeed, run_ts: datetime) -> datetime:
@@ -100,7 +101,7 @@ def version_id(source: str, fetch: FetchResult, built: datetime) -> str:
 def compute_run(run_ts: datetime, settings: Settings, states: dict[str, SourceState],
                 observations: list[Observation], export_obs: ExportObservation | None,
                 feed_map_fetch: FetchResult | None = None, feed_map_error: str | None = None,
-                prev_export_jobs: int | None = None) -> RunOutput:
+                prev_export_jobs: int | None = None, known_listings: frozenset[str] = frozenset()) -> RunOutput:
     mon = settings.monitor
     obs_by_source = {o.source: o for o in observations}
 
@@ -218,7 +219,18 @@ def compute_run(run_ts: datetime, settings: Settings, states: dict[str, SourceSt
 
     return RunOutput(new_versions=new, new_version_meta=meta, employer_rows=employer_rows, gaps=gaps,
                      checks=checks, latest=latest, previous=previous, export_usable=export_usable,
-                     employer_live=employer_live, duplicates=duplicate_rows, export_orgs=export_orgs)
+                     employer_live=employer_live, duplicates=duplicate_rows, export_orgs=export_orgs,
+                     listings=new_listings(export, known_listings, run_ts))
+
+
+def new_listings(export: JobiqoExport | None, known: frozenset[str], run_ts: datetime) -> list[dict]:
+    """Jobiqo listings not stored before, each stored once: the record of what was published when.
+    Any export that parsed counts, even a partial one: every listing in it is real."""
+    if export is None:
+        return []
+    fresh = {x.entity_id: x for x in export.listings if x.entity_id not in known}   # one row per id
+    return [{"entity_id": x.entity_id, "external_id": x.external_id or None, "published_ts": x.published_ts,
+             "first_seen_ts": run_ts} for x in fresh.values()]
 
 
 # --------------------------------------------------------------------------- check rows

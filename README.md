@@ -40,6 +40,19 @@ successful sync. The run log is public, so it prints counts only. The dashboard'
 lists the HubSpot clean-up first (keys that disagree, duplicates, missing Jobiqo IDs, customers with
 no jobs), then the feed employers no HubSpot company matches.
 
+## New vacancies per day
+
+Each run stores every Jobiqo listing in the export the first time it sees it (`export_listings`:
+Jobiqo's id, the feed's id, the published date, converted from the export's Central European time).
+`v_new_vacancies` counts each vacancy once, on the day Jobiqo first published it, under the
+imported feed its id appeared in first; listings without a feed id are "Made on Jobiqo". Listings
+that share a feed id, and copies of one vacancy in two feeds (the duplicates table), count once.
+History before 10 Nov 2026 was copied from JPD's Appcast table, once:
+
+```bash
+venv/bin/python -m feed_health.backfill_listings --admin-key ../005_job-performance-dashboard/service_account.json
+```
+
 ## Deploy on Streamlit Community Cloud
 
 1. Give the app its own read-only service account: BigQuery Job User on the project, then
@@ -80,6 +93,7 @@ Staleness thresholds (orange / red hours) are set in `defaults` and can be overr
 | `feed_health/store.py` | BigQuery tables, views, reads and load-job writes |
 | `feed_health/collect.py` | The collector run (`python -m feed_health.collect`) |
 | `feed_health/setup.py` | Creates the datasets, grants access, creates tables and views |
+| `feed_health/backfill_listings.py` | One-off copy of Jobiqo listing history from JPD into `export_listings` |
 | `dashboard/` | Streamlit app (`app.py`) and its tested display logic (`helpers.py`) |
 | `config/feeds.yml` | Feed membership and staleness thresholds |
 | `.github/workflows/collect.yml` | The collector Action |

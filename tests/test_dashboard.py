@@ -287,3 +287,38 @@ def test_feed_employers_not_in_hubspot():
 def test_companies_totals():
     totals = helpers.companies_totals(companies_frame(), employers_for_hubspot())
     assert totals == {"companies": 7, "customers": 4, "customers_no_jobs": 2, "cleanup": 3, "employers_not_in_hubspot": 2}
+
+
+def new_vacancy_rows():
+    return pd.DataFrame([
+        dict(day="2026-11-09", feed="JGP ATS feed", new_vacancies=55),
+        dict(day="2026-11-09", feed="Made on Jobiqo", new_vacancies=2),
+        dict(day="2026-11-07", feed="JGP scrape | JGP Backfill (v3)", new_vacancies=358),
+        dict(day="2026-11-07", feed="JGP ATS feed", new_vacancies=1),
+    ])
+
+
+def test_new_vacancy_groups_put_feeds_by_size_then_non_feed_groups():
+    assert helpers.new_vacancy_groups(new_vacancy_rows()) == [
+        "JGP scrape | JGP Backfill (v3)", "JGP ATS feed", "Made on Jobiqo"]
+
+
+def test_new_vacancies_table_rows_are_days_newest_first_with_a_total():
+    table = helpers.new_vacancies_table(new_vacancy_rows())
+    assert list(table.columns) == ["Day", "JGP scrape | JGP Backfill (v3)", "JGP ATS feed", "Made on Jobiqo", "Total"]
+    assert list(table["Day"]) == ["Mon 09 Nov", "Sun 08 Nov", "Sat 07 Nov"]     # the empty Sunday is a row of 0s
+    assert table.iloc[0][1:].tolist() == [0, 55, 2, 57]
+    assert table.iloc[1][1:].tolist() == [0, 0, 0, 0]
+    assert table.iloc[2][1:].tolist() == [358, 1, 0, 359]
+    pa.Table.from_pandas(table)
+
+
+def test_new_vacancies_chart_data_stacks_in_column_order():
+    data = helpers.new_vacancies_chart_data(new_vacancy_rows())
+    assert data.set_index("feed")["stack"].to_dict() == {
+        "JGP scrape | JGP Backfill (v3)": 0, "JGP ATS feed": 1, "Made on Jobiqo": 2}
+    assert str(data["day"].dtype).startswith("datetime64")
+
+
+def test_new_vacancies_table_empty():
+    assert list(helpers.new_vacancies_table(new_vacancy_rows().iloc[0:0]).columns) == ["Day", "Total"]
